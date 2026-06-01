@@ -107,6 +107,19 @@ val patchedMcSourceSet = sourceSets.create("patchedMc") {
 tasks.named<JavaExec>("runServer") {
     classpath = files(patchedMcSourceSet.output.classesDirs) + classpath
     dependsOn(patchedMcSourceSet.compileJavaTaskName)
+
+    // Baseline capture mode: ./gradlew runServer -PlatticeTickLimit=100
+    // Deletes world dirs (so every run starts from a fresh fixed-seed world), sets the tick limit.
+    val tickLimit = project.findProperty("latticeTickLimit") as String?
+    if (tickLimit != null) {
+        jvmArgs("-Dlattice.tickLimit=$tickLimit")
+        doFirst {
+            listOf("world", "world_nether", "world_the_end").forEach { dir ->
+                delete(layout.projectDirectory.dir("run/runServer/$dir"))
+            }
+            logger.lifecycle("[Lattice] baseline mode: world cleared, tick limit = $tickLimit")
+        }
+    }
 }
 
 tasks.register("applyPatches") {

@@ -1,0 +1,102 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Mainul Fahad <mfahad70@stuy.edu>
+Date: Mon, 1 Jun 2026 15:55:48 -0400
+Subject: [PATCH] Add hash oracle + baseline scenario to MinecraftServer
+ (Phase-1)
+
+Baseline capture infrastructure for Phase-1 determinism testing:
+- latticeInitScenario(): disables mob spawning; force-loads spawn chunk
+  to FULL via updateChunkForced+getChunk; spawns 10 stone items at y=250
+  (above all superflat terrain) with zero initial velocity and
+  setNeverPickUp() to prevent merging side-effects.
+  Runs BEFORE lattice.tick() so state is set before the first physics pass.
+- Hash oracle: -Dlattice.tickLimit=N explicitly ticks all visible entities
+  via overworld.tickNonPassenger() (headless servers don't run the vanilla
+  player-gated entity loop), then calls VanillaStateHasher.hash() and
+  prints tick=N hash=... per tick. Halts cleanly after N ticks.
+- Enabled via ./gradlew runServer -PlatticeTickLimit=100.
+- Two identical runs produce bit-identical per-tick hash sequences (verified).
+
+diff --git a/net/minecraft/server/MinecraftServer.java b/net/minecraft/server/MinecraftServer.java
+index 6f05aca7dd98c5108e759bf49e4bdb20c13d4082..aab1095d5b1d0e89271925c61bdfcc69a6021147 100644
+--- a/net/minecraft/server/MinecraftServer.java
++++ b/net/minecraft/server/MinecraftServer.java
+@@ -994,7 +994,28 @@ public abstract class MinecraftServer extends ReentrantBlockableEventLoop<TickTa
+         this.tickCount++;
+         this.tickRateManager.tick();
+         if (this.tickCount == 1) LOGGER.info("[Lattice] seam alive — tick 1");
++        // Scenario init before first tickChildren: gamerules + item spawns are set before any physics runs.
++        if (this.tickCount == 1 && System.getProperty("lattice.tickLimit") != null) {
++            latticeInitScenario();
++        }
+         this.lattice.tick(() -> this.tickChildren(haveTime));
++        // Lattice Phase-1 hash oracle — enabled via -Dlattice.tickLimit=N
++        String latticeLimit = System.getProperty("lattice.tickLimit");
++        if (latticeLimit != null) {
++            // Headless servers don't drive entity ticking via the player-range system.
++            // Tick scenario entities explicitly (bit-identical to what vanilla does with a player).
++            net.minecraft.server.level.ServerLevel ow = this.overworld();
++            java.util.List<net.minecraft.world.entity.Entity> toTick = new java.util.ArrayList<>();
++            for (net.minecraft.world.entity.Entity e : ow.getAllEntities()) toTick.add(e);
++            for (net.minecraft.world.entity.Entity e : toTick) {
++                if (!e.isRemoved()) ow.tickNonPassenger(e);
++            }
++            long h = io.github.mainulf.lattice.VanillaStateHasher.hash(this.getAllLevels());
++            System.out.printf("[Lattice] tick=%d hash=%016x%n", this.tickCount, h);
++            if (this.tickCount >= Integer.parseInt(latticeLimit)) {
++                this.halt(false);
++            }
++        }
+         if (nano - this.lastServerStatus >= STATUS_EXPIRE_TIME_NANOS) {
+             this.lastServerStatus = nano;
+             this.status = this.buildServerStatus();
+@@ -1100,6 +1121,49 @@ public abstract class MinecraftServer extends ReentrantBlockableEventLoop<TickTa
+         }
+     }
+ 
++    private void latticeInitScenario() {
++        // Disable mob spawning so only our scripted items are in the world.
++        for (net.minecraft.server.level.ServerLevel level : this.getAllLevels()) {
++            level.getGameRules().set(net.minecraft.world.level.gamerules.GameRules.SPAWN_MOBS, false, this);
++            level.getGameRules().set(net.minecraft.world.level.gamerules.GameRules.SPAWN_MONSTERS, false, this);
++        }
++        // Force-load the spawn chunk to ENTITY_TICKING so items tick without a player connection.
++        net.minecraft.server.level.ServerLevel overworld = this.overworld();
++        net.minecraft.core.BlockPos spawnPos = this.worldData.overworldData().getRespawnData().pos();
++        net.minecraft.world.level.ChunkPos spawnChunk = net.minecraft.world.level.ChunkPos.containing(spawnPos);
++        // updateChunkForced adds a FORCED ticket at level 31 (ENTITY_TICKING), not just FULL(33).
++        overworld.getChunkSource().updateChunkForced(spawnChunk, true);
++        // Synchronously wait for the chunk to reach FULL generation status.
++        try {
++            overworld.getChunkSource().getChunk(spawnChunk.x(), spawnChunk.z(),
++                net.minecraft.world.level.chunk.status.ChunkStatus.FULL, true);
++        } catch (Exception e) {
++            LOGGER.warn("[Lattice] scenario chunk load failed: {}", e.getMessage());
++            return;
++        }
++        // Spawn 10 stone items 100 blocks above the spawn-chunk surface — they'll fall and
++        // produce changing hashes for ~50 ticks before landing.
++        double sx = spawnChunk.getWorldPosition().getX() + 8.0;
++        double sz = spawnChunk.getWorldPosition().getZ() + 8.0;
++        // Spawn above all possible terrain (overworld height cap is 320), items free-fall in air.
++        double spawnY = 250.0;
++        int groundY = 0;
++        int spawned = 0;
++        // Spread items within the same spawn chunk (max offset 14 < 16 chunk width)
++        for (int i = 0; i < 10; i++) {
++            net.minecraft.world.item.ItemStack stack = new net.minecraft.world.item.ItemStack(
++                net.minecraft.world.item.Items.STONE);
++            // All items stay within the spawn chunk: offset 0, 1, 2, ... 9 (well within 16-wide chunk)
++            net.minecraft.world.entity.item.ItemEntity item = new net.minecraft.world.entity.item.ItemEntity(
++                overworld, sx + i, spawnY, sz, stack, 0.0, 0.0, 0.0);
++            item.setNeverPickUp();  // pickupDelay=32767: prevents merging so scenario is deterministic
++            if (overworld.addFreshEntity(item)) spawned++;
++        }
++        int visible = 0;
++        for (net.minecraft.world.entity.Entity e : overworld.getAllEntities()) visible++;
++        LOGGER.info("[Lattice] scenario init: spawned={} visible={} chunk={} spawnY={} groundY={}", spawned, visible, spawnChunk, spawnY, groundY);
++    }
++
+     protected void tickChildren(final BooleanSupplier haveTime) {
+         ProfilerFiller profiler = Profiler.get();
+         this.getPlayerList().getPlayers().forEach(playerx -> playerx.connection.suspendFlushing());
