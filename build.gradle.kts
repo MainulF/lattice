@@ -1,4 +1,4 @@
-import java.nio.file.Files
+import java.util.zip.ZipInputStream
 
 plugins {
     java
@@ -12,8 +12,10 @@ repositories {
     mavenCentral()
 }
 
+val mcVersion = "26.1"
+
 minecraft {
-    version("26.1")
+    version(mcVersion)
     runs {
         server()
     }
@@ -25,39 +27,113 @@ java {
     }
 }
 
-// ── Patch workflow ────────────────────────────────────────────────────────────
-//
-// Modelled after Paper's patch pipeline:
-//   applyPatches  – copies decompiled source into work/server, applies .patch files
-//   rebuildPatches – turns git diffs in work/server back into patches/server/*.patch
-//
-// The work/ directory is gitignored; patches/ is committed.
+// ── Helpers ───────────────────────────────────────────────────────────────────
 
-val workDir = layout.projectDirectory.dir("work/server")
-val patchDir = layout.projectDirectory.dir("patches/server")
-
-tasks.register<Exec>("applyPatches") {
-    group = "lattice"
-    description = "Apply committed patches to the decompiled MC working tree"
-    dependsOn("decompile")
-
-    doFirst {
-        val work = workDir.asFile
-        if (!work.exists()) work.mkdirs()
-    }
-
-    // Placeholder: real implementation wires decompile output → work/, then
-    // git am's each file from patches/server/. Fleshed out in Phase 0 Step C.
-    commandLine("echo", "applyPatches: TODO — wire decompile output in Step C")
-    isIgnoreExitValue = true
+fun git(workDir: File, vararg args: String) {
+    val proc = ProcessBuilder("git", *args)
+        .directory(workDir)
+        .redirectErrorStream(true)
+        .start()
+    proc.inputStream.bufferedReader().lines().forEach { logger.lifecycle("  $it") }
+    val exit = proc.waitFor()
+    if (exit != 0) throw GradleException("git ${args.joinToString(" ")} failed (exit $exit)")
 }
 
-tasks.register<Exec>("rebuildPatches") {
-    group = "lattice"
-    description = "Rebuild .patch files from git diffs in the MC working tree"
+fun unzip(jarFile: File, destDir: File) {
+    ZipInputStream(jarFile.inputStream().buffered()).use { zip ->
+        var entry = zip.nextEntry
+        while (entry != null) {
+            val target = destDir.resolve(entry.name)
+            if (entry.isDirectory) {
+                target.mkdirs()
+            } else {
+                target.parentFile?.mkdirs()
+                target.outputStream().buffered().use { out -> zip.copyTo(out) }
+            }
+            zip.closeEntry()
+            entry = zip.nextEntry
+        }
+    }
+}
 
-    // Placeholder: real implementation runs git format-patch from work/server
-    // back into patches/server/. Fleshed out in Phase 0 Step C.
-    commandLine("echo", "rebuildPatches: TODO — wire in Step C")
-    isIgnoreExitValue = true
+// ── Patch workflow ────────────────────────────────────────────────────────────
+//
+// applyPatches  – extracts decompiled sources to work/server/, inits git, applies .patch files
+// rebuildPatches – turns commits above 'vanilla' tag in work/server/ back into patches/server/*.patch
+//
+// work/ is gitignored (decompiled MC source — never committed, per PLAN §2).
+// patches/ is committed (legal — contains only diffs).
+
+val workServerDir: File = layout.projectDirectory.dir("work/server").asFile
+val patchServerDir: File = layout.projectDirectory.dir("patches/server").asFile
+
+val sourcesJarFile: File by lazy {
+    gradle.gradleUserHomeDir
+        .resolve("caches/VanillaGradle/v2/jars/net/minecraft/joined/$mcVersion/joined-$mcVersion-sources.jar")
+}
+
+tasks.register("applyPatches") {
+    group = "lattice"
+    description = "Extract decompiled MC sources to work/server and apply committed patches"
+    dependsOn("decompile")
+
+    doLast {
+        val jar = sourcesJarFile
+        require(jar.exists()) {
+            "Sources JAR not found: ${jar.absolutePath}\nRun ./gradlew decompile first."
+        }
+
+        // Clean slate — reproducible working tree.
+        workServerDir.deleteRecursively()
+        workServerDir.mkdirs()
+
+        logger.lifecycle("Extracting ${jar.name} to ${workServerDir.relativeTo(projectDir)}/")
+        unzip(jar, workServerDir)
+
+        // Initialise a git repo and make the vanilla base commit.
+        git(workServerDir.parentFile, "init", workServerDir.name)
+        git(workServerDir, "add", "-A")
+        git(workServerDir, "commit", "-m",
+            "Vanilla MC $mcVersion (unmodified decompile)\n\nBase commit — do not include in patches/server/.")
+        git(workServerDir, "tag", "vanilla")
+
+        // Apply patches.
+        val patches = patchServerDir.listFiles()
+            ?.filter { it.extension == "patch" }
+            ?.sortedBy { it.name }
+            .orEmpty()
+
+        if (patches.isEmpty()) {
+            logger.lifecycle("No patches — working tree is vanilla MC $mcVersion.")
+        } else {
+            git(workServerDir, *buildList {
+                add("am"); add("--3way")
+                addAll(patches.map { it.absolutePath })
+            }.toTypedArray())
+            logger.lifecycle("Applied ${patches.size} patch(es).")
+        }
+
+        logger.lifecycle("Patched working tree: ${workServerDir.absolutePath}")
+    }
+}
+
+tasks.register("rebuildPatches") {
+    group = "lattice"
+    description = "Regenerate patches/server/*.patch from commits above the 'vanilla' tag"
+
+    doLast {
+        require(workServerDir.resolve(".git").exists()) {
+            "work/server is not a git repo — run ./gradlew applyPatches first."
+        }
+
+        patchServerDir.listFiles()?.filter { it.extension == "patch" }?.forEach { it.delete() }
+
+        git(workServerDir, "format-patch", "vanilla",
+            "--output-directory", patchServerDir.absolutePath,
+            "--zero-commit", "--full-index", "--no-signature", "--no-stat", "-N",
+            "--src-prefix=a/", "--dst-prefix=b/")
+
+        val count = patchServerDir.listFiles()?.count { it.extension == "patch" } ?: 0
+        logger.lifecycle("Rebuilt $count patch(es) in patches/server/")
+    }
 }
