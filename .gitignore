@@ -24,6 +24,8 @@ work/
 ruvector.db
 *.db
 .claude/
+.swarm/
+.claude-flow/
 
 # ============================================================
 # IDE
