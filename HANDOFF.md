@@ -1,17 +1,20 @@
 # HANDOFF — Phase 1 in progress
 
-**Written:** 2026-06-01 (session 2 update)
-**Session:** Phase 1 seam + build wiring + VanillaStateHasher
-**Next instance:** read `DECISIONS.md`, `CLAUDE.md`, and this file for state.
+**Written:** 2026-06-01 (session 3 update)
+**Session:** Phase 1 hash oracle + baseline capture
+**Next instance:** read `CLAUDE.md` and this file for state.
 
 ---
 
 ## 1. Where we are
 
-**Phase 0 complete.** **Phase 1 seam infrastructure complete.**
+**Phase 0 complete.** **Phase 1 baseline capture complete.**
 
-The MinecraftServer seam is wired and smoke-tested. `VanillaStateHasher` exists.
-The next step is **baseline capture** (two reproducible vanilla runs → identical per-tick hashes), then carving the first subsystem.
+Two identical runs of `./gradlew runServer -PlatticeTickLimit=100` produce
+bit-identical 100-tick hash sequences. Baseline saved to `run/baseline-hash.log`
+(gitignored; regenerate any time with that command).
+
+**Next step: carve first subsystem.** Item entity gravity/movement → `MovementSystem`.
 
 ### Critical build facts (do NOT rediscover)
 
@@ -19,12 +22,18 @@ The next step is **baseline capture** (two reproducible vanilla runs → identic
 - `runServer` depends on `classes` — our compiled output IS on the runtime classpath.
 - `patchedMc` source set compiles only listed files from `work/server/`, output prepended to `runServer` classpath → patched classes shadow the MC jar.
 - To add a new patched file: add its path to `java.include(...)` in `build.gradle.kts`, edit in `work/server/`, commit in `work/server/` git, run `./gradlew rebuildPatches`.
+- **World type is superflat** (`level-type=minecraft:flat` in `run/runServer/server.properties`). This ensures items fall through pure air for deterministic physics.
+- **Hash oracle quirks discovered this session** (DO NOT REDISCOVER):
+  - MC 26.1 doesn't load spawn chunks without players. Entities added via `addFreshEntity` land in `visibleEntityStorage` (TRACKED) but NOT `entityTickList` (not TICKING).
+  - Fix: call `overworld.tickNonPassenger(e)` explicitly for each entity in `getAllEntities()` after `tickChildren()`.
+  - `addTicketWithRadius(FORCED, chunk, 0)` adds a ticket at level 33 (FULL), NOT 31 (ENTITY_TICKING). Use `updateChunkForced(chunk, true)` + `getChunk(FULL)` to get ENTITY_TICKING.
+  - Item merging (`mergeWithNeighbours`) is non-deterministic with nearby items. Use `item.setNeverPickUp()` on all scenario items.
+  - Superflat world eliminates block-collision non-determinism from async adjacent-chunk loading.
 
 ### Still needed to exit Phase 1
 
-1. **Baseline capture** — run server with fixed seed, no mob spawning, scripted deterministic entity population, ~100 ticks; print `VanillaStateHasher.hash(server.getAllLevels())` each tick. Run twice; confirm per-tick hashes are identical. Capture as `baseline-hash.log`.
-2. **First carved subsystem** — item entity gravity/movement; remove from opaque tick, register declared `MovementSystem`; diff hash vs baseline.
-3. **§1.6 analog test** at item scale (Phase 2 gate, but think now).
+1. **First carved subsystem** — item entity gravity/movement; remove from opaque `tickChildren`, register declared `MovementSystem`; diff hash vs baseline (should be identical).
+2. **§1.6 analog test** at item scale (Phase 2 gate, but think now).
 
 ### How to wire VanillaStateHasher into the server
 
