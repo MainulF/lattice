@@ -1,20 +1,54 @@
 # HANDOFF — Phase 1 in progress
 
-**Written:** 2026-06-01
-**Session:** Phase 1 ECS skeleton — standalone engine, harness stub, integration seam
+**Written:** 2026-06-01 (session 2 update)
+**Session:** Phase 1 seam + build wiring + VanillaStateHasher
 **Next instance:** read `DECISIONS.md`, `CLAUDE.md`, and this file for state.
 
 ---
 
 ## 1. Where we are
 
-**Phase 0 is complete** (see previous HANDOFF entry below).
-**Phase 1 has started.** The ECS engine core is built and tested. The integration seam exists.
-The replay-diff oracle is *not yet* connected to vanilla state — that is the next concrete step.
+**Phase 0 complete.** **Phase 1 seam infrastructure complete.**
+
+The MinecraftServer seam is wired and smoke-tested. `VanillaStateHasher` exists.
+The next step is **baseline capture** (two reproducible vanilla runs → identical per-tick hashes), then carving the first subsystem.
+
+### Critical build facts (do NOT rediscover)
+
+- `net.minecraft:joined:26.1` is on the `compileClasspath` — we can import MC classes in `src/main/java`.
+- `runServer` depends on `classes` — our compiled output IS on the runtime classpath.
+- `patchedMc` source set compiles only listed files from `work/server/`, output prepended to `runServer` classpath → patched classes shadow the MC jar.
+- To add a new patched file: add its path to `java.include(...)` in `build.gradle.kts`, edit in `work/server/`, commit in `work/server/` git, run `./gradlew rebuildPatches`.
+
+### Still needed to exit Phase 1
+
+1. **Baseline capture** — run server with fixed seed, no mob spawning, scripted deterministic entity population, ~100 ticks; print `VanillaStateHasher.hash(server.getAllLevels())` each tick. Run twice; confirm per-tick hashes are identical. Capture as `baseline-hash.log`.
+2. **First carved subsystem** — item entity gravity/movement; remove from opaque tick, register declared `MovementSystem`; diff hash vs baseline.
+3. **§1.6 analog test** at item scale (Phase 2 gate, but think now).
+
+### How to wire VanillaStateHasher into the server
+
+`MinecraftServer` has `getAllLevels()` (returns `Iterable<ServerLevel>`) and `this.tickCount`.
+Add a per-tick call in `LatticeServer.tick()` or a temporary hook in `MinecraftServer.tickServer()`.
+Print to stdout: `System.out.printf("tick=%d hash=%016x%n", tick, hash)`.
 
 ---
 
-## 2. What was built this session
+## 2. What was built session 1 (ECS engine)
+
+---
+
+## 2. What was built session 2 (seam + wiring)
+
+| File | What changed |
+|---|---|
+| `build.gradle.kts` | `patchedMc` source set + `runServer` classpath prepend |
+| `src/main/java/.../VanillaStateHasher.java` | FNV-1a hash over `ServerLevel.getAllEntities()`, sorted by `getId()`, fields: x/y/z + deltaMovement x/y/z |
+| `patches/server/0002-Add-Lattice-scheduler-seam...patch` | `LatticeServer` field + `lattice.tick(lambda)` in `MinecraftServer.tickServer()` |
+
+---
+
+## 3. What was built session 1 (ECS engine)
 
 ### ECS engine (`src/main/java/io/github/mainulf/lattice/ecs/`)
 
