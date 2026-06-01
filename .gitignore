@@ -1,0 +1,40 @@
+# ============================================================
+# Gradle
+# ============================================================
+.gradle/
+build/
+!gradle/wrapper/gradle-wrapper.jar
+
+# ============================================================
+# VanillaGradle workspace (NEVER COMMIT — decompiled MC source)
+# Decompiled output, downloaded jars, Mojang mappings, and the
+# patch-working tree all belong here.  Per PLAN §2.
+# ============================================================
+work/
+*.jar
+!gradle/wrapper/gradle-wrapper.jar
+
+# ============================================================
+# Local tooling state
+# ============================================================
+ruvector.db
+*.db
+.claude/
+
+# ============================================================
+# IDE
+# ============================================================
+.idea/
+*.iml
+.vscode/
+.settings/
+.classpath
+.project
+*.swp
+*.swo
+
+# ============================================================
+# OS
+# ============================================================
+.DS_Store
+Thumbs.db
