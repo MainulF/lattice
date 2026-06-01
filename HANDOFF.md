@@ -1,20 +1,27 @@
-# HANDOFF — Phase 1 in progress
+# HANDOFF — Phase 1 complete, Phase 2 next
 
-**Written:** 2026-06-01 (session 3 update)
-**Session:** Phase 1 hash oracle + baseline capture
+**Written:** 2026-06-01 (session 4 update)
+**Session:** Phase 1 exit — MovementSystem carve + replay-diff green
 **Next instance:** read `CLAUDE.md` and this file for state.
 
 ---
 
 ## 1. Where we are
 
-**Phase 0 complete.** **Phase 1 baseline capture complete.**
+**Phase 0 complete. Phase 1 complete.**
 
-Two identical runs of `./gradlew runServer -PlatticeTickLimit=100` produce
-bit-identical 100-tick hash sequences. Baseline saved to `run/baseline-hash.log`
-(gitignored; regenerate any time with that command).
+Phase 1 exit criterion met: serial Lattice reproduces vanilla behaviour, validated by replay-diff.
 
-**Next step: carve first subsystem.** Item entity gravity/movement → `MovementSystem`.
+```
+./gradlew runServer -PlatticeTickLimit=100                    # vanilla baseline
+./gradlew runServer -PlatticeTickLimit=100 -PlatticeMoveCarve=1  # carved — IDENTICAL
+```
+
+Both produce bit-identical 100-tick hash sequences. Carved is also bit-reproducible
+across two independent runs. Baseline at `run/baseline-hash.log` (recaptured clean).
+
+**Next: Phase 2** — `DeterminismHarness` + RNG/registry cleanse + cross-region message path.
+See design §5 Phase 2 for full scope.
 
 ### Critical build facts (do NOT rediscover)
 
@@ -22,18 +29,15 @@ bit-identical 100-tick hash sequences. Baseline saved to `run/baseline-hash.log`
 - `runServer` depends on `classes` — our compiled output IS on the runtime classpath.
 - `patchedMc` source set compiles only listed files from `work/server/`, output prepended to `runServer` classpath → patched classes shadow the MC jar.
 - To add a new patched file: add its path to `java.include(...)` in `build.gradle.kts`, edit in `work/server/`, commit in `work/server/` git, run `./gradlew rebuildPatches`.
-- **World type is superflat** (`level-type=minecraft:flat` in `run/runServer/server.properties`). This ensures items fall through pure air for deterministic physics.
-- **Hash oracle quirks discovered this session** (DO NOT REDISCOVER):
-  - MC 26.1 doesn't load spawn chunks without players. Entities added via `addFreshEntity` land in `visibleEntityStorage` (TRACKED) but NOT `entityTickList` (not TICKING).
-  - Fix: call `overworld.tickNonPassenger(e)` explicitly for each entity in `getAllEntities()` after `tickChildren()`.
-  - `addTicketWithRadius(FORCED, chunk, 0)` adds a ticket at level 33 (FULL), NOT 31 (ENTITY_TICKING). Use `updateChunkForced(chunk, true)` + `getChunk(FULL)` to get ENTITY_TICKING.
-  - Item merging (`mergeWithNeighbours`) is non-deterministic with nearby items. Use `item.setNeverPickUp()` on all scenario items.
-  - Superflat world eliminates block-collision non-determinism from async adjacent-chunk loading.
-
-### Still needed to exit Phase 1
-
-1. **First carved subsystem** — item entity gravity/movement; remove from opaque `tickChildren`, register declared `MovementSystem`; diff hash vs baseline (should be identical).
-2. **§1.6 analog test** at item scale (Phase 2 gate, but think now).
+- **ItemEntity.java is now in the patchedMc include list.** Gravity/move is gated on `LatticeServer.MOVEMENT_CARVED`.
+- **World type is superflat** (`level-type=minecraft:flat` in `run/runServer/server.properties`). Items fall through pure air for deterministic physics.
+- **Hash oracle + carve facts (DO NOT REDISCOVER):**
+  - MC 26.1: entities added via `addFreshEntity` land in `visibleEntityStorage` but NOT `entityTickList` — no TICKING without player. Fix: call `tickNonPassenger(e)` explicitly.
+  - **CRITICAL**: `updateChunkForced(chunk, true)` uses a `FORCED` ticket (flags=15, includes `FLAG_SIMULATION=4`). This causes entities to enter `entityTickList` after ~3 ticks, double-ticking them via `tickChildren` on top of our explicit loop. **Use `PLAYER_LOADING` ticket (flags=2, LOADING only, no SIMULATION) instead.** Fixed in patch 0003 (session 4).
+  - Item merging is non-deterministic → use `setNeverPickUp()` on all scenario items.
+  - Superflat eliminates block-collision non-determinism.
+  - **MovementSystem operation order** must match `ItemEntity.tick()` exactly for the air-fall path: (1) `vy -= 0.04` (gravity), (2) `pos += post-gravity-vel` (move), (3) `vel *= (0.98F, 0.98, 0.98F)` (friction). The `0.98F` on x/z is float (=0.9800000190734863 as double); `0.98` on y is double literal. Irrelevant when vx/vz=0 but matters for future horizontal-motion scenarios.
+  - **Sync ordering**: call `lattice.syncFromMC(entities)` BEFORE `lattice.tick()` (so MOVEMENT-phase snapshot sees current MC positions); call `lattice.applyToMC(entities)` AFTER `lattice.tick()` (so explicit `tickNonPassenger` loop sees ECS-updated positions).
 
 ### How to wire VanillaStateHasher into the server
 
