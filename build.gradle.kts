@@ -90,6 +90,25 @@ tasks.withType<JavaExec>().configureEach {
     })
 }
 
+// ── Patched MC source set ──────────────────────────────────────────────────────
+// Compiles only the MC files we've modified (listed by include patterns below).
+// Output is prepended to runServer's classpath so our versions shadow the jar.
+// Compile classpath inherits from main (MC jar + our own compiled classes).
+val patchedMcSourceSet = sourceSets.create("patchedMc") {
+    java.srcDir("work/server")
+    java.include(
+        "net/minecraft/server/MinecraftServer.java"
+        // Add more files here as we patch them (one per line, comma-separated).
+    )
+    compileClasspath += sourceSets.main.get().compileClasspath + sourceSets.main.get().output
+}
+
+// Prepend patchedMc output so our patched classes take precedence over the MC jar.
+tasks.named<JavaExec>("runServer") {
+    classpath = files(patchedMcSourceSet.output.classesDirs) + classpath
+    dependsOn(patchedMcSourceSet.compileJavaTaskName)
+}
+
 tasks.register("applyPatches") {
     group = "lattice"
     description = "Extract decompiled MC sources to work/server and apply committed patches"

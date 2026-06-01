@@ -1,0 +1,37 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Mainul Fahad <mfahad70@stuy.edu>
+Date: Mon, 1 Jun 2026 11:52:22 -0400
+Subject: [PATCH] Add Lattice scheduler seam to MinecraftServer.tickServer
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Install the opaque whole-tick seam:
+  private final LatticeServer lattice = new LatticeServer()
+  tickChildren(haveTime) → lattice.tick(() -> tickChildren(haveTime))
+
+Smoke-test marker fires once (tick==1) at INFO level to confirm the
+patched class loads and the seam executes.  Remove in Phase 2.
+
+diff --git a/net/minecraft/server/MinecraftServer.java b/net/minecraft/server/MinecraftServer.java
+index bff81d5a63d8943a60d449b492dd70123ce995ec..6f05aca7dd98c5108e759bf49e4bdb20c13d4082 100644
+--- a/net/minecraft/server/MinecraftServer.java
++++ b/net/minecraft/server/MinecraftServer.java
+@@ -257,6 +257,7 @@ public abstract class MinecraftServer extends ReentrantBlockableEventLoop<TickTa
+     private final NotificationManager notificationManager;
+     private final ServerActivityMonitor serverActivityMonitor;
+     private long lastServerStatus;
++    private final io.github.mainulf.lattice.LatticeServer lattice = new io.github.mainulf.lattice.LatticeServer();
+     private final Thread serverThread;
+     private long lastTickNanos = Util.getNanos();
+     private long taskExecutionStartNanos = Util.getNanos();
+@@ -992,7 +993,8 @@ public abstract class MinecraftServer extends ReentrantBlockableEventLoop<TickTa
+ 
+         this.tickCount++;
+         this.tickRateManager.tick();
+-        this.tickChildren(haveTime);
++        if (this.tickCount == 1) LOGGER.info("[Lattice] seam alive — tick 1");
++        this.lattice.tick(() -> this.tickChildren(haveTime));
+         if (nano - this.lastServerStatus >= STATUS_EXPIRE_TIME_NANOS) {
+             this.lastServerStatus = nano;
+             this.status = this.buildServerStatus();

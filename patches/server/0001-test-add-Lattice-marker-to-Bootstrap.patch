@@ -1,0 +1,15 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Mainul Fahad <mfahad70@stuy.edu>
+Date: Sun, 31 May 2026 23:23:00 -0400
+Subject: [PATCH] test: add Lattice marker to Bootstrap
+
+
+diff --git a/net/minecraft/server/Bootstrap.java b/net/minecraft/server/Bootstrap.java
+index c667484cbbd54863537e428c0f792c55de82ee3f..970bc9442a7d148528a804b9949b5e99ab597cd1 100644
+--- a/net/minecraft/server/Bootstrap.java
++++ b/net/minecraft/server/Bootstrap.java
+@@ -143,3 +143,4 @@ public class Bootstrap {
+         STDOUT.close();
+     }
+ }
++// Lattice marker — Phase 0 patch test
