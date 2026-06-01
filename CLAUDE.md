@@ -4,9 +4,23 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project status
 
-**Pre-implementation.** The repository currently contains a single design document, `lattice-design.md` (~38KB), and no code, build system, or git history yet. That document is the authoritative spec — read it before proposing or writing anything. This file summarizes its architecture so you don't have to re-read 38KB every session, but on any conflict the design doc wins.
+**Phase 0 complete.** The host-preparation pipeline is working. GitHub repo is live at
+https://github.com/MainulF/lattice.
 
-When implementation starts, update this file with the real build/test/lint commands (none exist yet — do not invent them).
+**Real build commands (Phase 0):**
+```bash
+./gradlew decompile        # download + decompile MC 26.1 (first run: ~2min, caches result)
+./gradlew applyPatches     # extract decompiled sources to work/server/, apply patches/server/*.patch
+./gradlew rebuildPatches   # regenerate patches/server/*.patch from commits above 'vanilla' tag
+./gradlew build            # compile Lattice's own source (src/)
+./gradlew runServer        # run vanilla-parity MC 26.1 server (run/runServer/ is the working dir)
+```
+
+**Note:** First time running `runServer`, VanillaGradle creates `run/runServer/eula.txt`. Edit it
+to `eula=true` before re-running. `run/` is gitignored.
+
+The design doc (`lattice-design.md`) is still the authoritative spec. On any conflict between
+this file and the design doc, **the design doc wins**.
 
 ## What Lattice is
 

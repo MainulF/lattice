@@ -23,7 +23,7 @@ minecraft {
 
 java {
     toolchain {
-        languageVersion = JavaLanguageVersion.of(25)
+        languageVersion = JavaLanguageVersion.of(26)
     }
 }
 
@@ -70,6 +70,14 @@ val patchServerDir: File = layout.projectDirectory.dir("patches/server").asFile
 val sourcesJarFile: File by lazy {
     gradle.gradleUserHomeDir
         .resolve("caches/VanillaGradle/v2/jars/net/minecraft/joined/$mcVersion/joined-$mcVersion-sources.jar")
+}
+
+// VanillaGradle reads javaVersion=25 from MC 26.1's launcher manifest and locks runServer
+// to a Java 25 toolchain. We only have JDK 26 installed; override to use it.
+tasks.withType<JavaExec>().configureEach {
+    javaLauncher.set(javaToolchains.launcherFor {
+        languageVersion.set(JavaLanguageVersion.of(26))
+    })
 }
 
 tasks.register("applyPatches") {

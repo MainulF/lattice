@@ -6,6 +6,10 @@ build/
 !gradle/wrapper/gradle-wrapper.jar
 
 # ============================================================
+# VanillaGradle run directories (server state, world data)
+run/
+
+# ============================================================
 # VanillaGradle workspace (NEVER COMMIT — decompiled MC source)
 # Decompiled output, downloaded jars, Mojang mappings, and the
 # patch-working tree all belong here.  Per PLAN §2.
