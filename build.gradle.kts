@@ -97,7 +97,8 @@ tasks.withType<JavaExec>().configureEach {
 val patchedMcSourceSet = sourceSets.create("patchedMc") {
     java.srcDir("work/server")
     java.include(
-        "net/minecraft/server/MinecraftServer.java"
+        "net/minecraft/server/MinecraftServer.java",
+        "net/minecraft/world/entity/item/ItemEntity.java"
         // Add more files here as we patch them (one per line, comma-separated).
     )
     compileClasspath += sourceSets.main.get().compileClasspath + sourceSets.main.get().output
@@ -109,8 +110,10 @@ tasks.named<JavaExec>("runServer") {
     dependsOn(patchedMcSourceSet.compileJavaTaskName)
 
     // Baseline capture mode: ./gradlew runServer -PlatticeTickLimit=100
+    // Add -PlatticeMoveCarve to also enable the MovementSystem carve for replay-diff testing.
     // Deletes world dirs (so every run starts from a fresh fixed-seed world), sets the tick limit.
     val tickLimit = project.findProperty("latticeTickLimit") as String?
+    val moveCarve = project.findProperty("latticeMoveCarve")
     if (tickLimit != null) {
         jvmArgs("-Dlattice.tickLimit=$tickLimit")
         doFirst {
@@ -119,6 +122,10 @@ tasks.named<JavaExec>("runServer") {
             }
             logger.lifecycle("[Lattice] baseline mode: world cleared, tick limit = $tickLimit")
         }
+    }
+    if (moveCarve != null) {
+        jvmArgs("-Dlattice.movementCarved=1")
+        logger.lifecycle("[Lattice] MovementSystem carve enabled")
     }
 }
 
