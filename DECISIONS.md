@@ -18,21 +18,14 @@ wraps the *same* §3 types (`Component`, `LatticeSystem`, `Access`, `View`, `Com
 compiling down to exactly the types the scheduler already reads. Consistent with "design doc wins":
 adding a front-end, not contradicting §3.
 
-### Bytecode target dropped to `--release 25` (amends the "JDK 26" choice below)
+### Bytecode target: NO change needed (supersedes the original `--release 25` plan)
 
-Kotlin's max `jvmTarget` is **25** (Kotlin compiler reference, April 2026) — it cannot emit or
-reliably read bytecode 26. Resolution: **target `--release 25` across the whole project**, keep the
-**JDK 26 toolchain + runtime** unchanged. This is sound because:
-- MC 26.1 requires Java 25+ at *runtime* (the 26 runtime satisfies it); it never needs bytecode-26 *output*.
-- FFM (§4) is a runtime API on JDK 22+ — unaffected by bytecode target.
-- `strictfp` is mandatory since JDK 17 regardless of target — determinism is unaffected.
+**Kotlin 2.4.0-RC2 (2026) added `jvmTarget 26` support** — the compiler can now generate Java 26
+bytecode. The initial plan (drop to `--release 25`) is therefore unnecessary. The engine's existing
+bytecode target is unchanged. When Milestone K is activated, pin Kotlin 2.4.0 stable (or the latest
+≥ 2.4.0) and set `jvmTarget = 26` directly.
 
-So this **amends, not contradicts**, the 2026-05-31 "JDK 26" entry: JDK 26 stays as toolchain and
-runtime; only the emitted bytecode version drops to 25, necessitated by the Kotlin requirement.
-Validation gate: the existing 49 tests must stay green after the `--release 25` change, *before* any
-Kotlin is added (ROADMAP K1).
-
-### Kotlin version: pinned 2.x, `jvmTarget = 25` (exact patch confirmed in K1)
+### Kotlin version: Kotlin 2.4.0 stable (or latest ≥ 2.4.0), `jvmTarget = 26`
 
 Kotlin 2.x via the `kotlin("jvm")` Gradle plugin. `kotlin-stdlib` ships with the loader. Exact patch
 version pinned during K1 after confirming clean interop with the bytecode-25 engine classfiles.

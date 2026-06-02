@@ -22,6 +22,7 @@ On any conflict, the design doc wins. This file is the *forward plan*; it does n
 Peak measured speedup **3.85×** at (A=4, B=2), flat world-state hash across all configs — the thesis is demonstrated for the PoC.
 
 **The new directive (2026-06-02):** Kotlin becomes the **primary mod-development language**; Java stays fully supported. See Milestone K and `DECISIONS.md` 2026-06-02.
+**Kotlin status: on standby.** Kotlin work is deferred until engine milestones stabilize. Do not drop the project bytecode target or add the Kotlin plugin until Milestone K is activated. See §2.
 
 ---
 
@@ -36,22 +37,22 @@ There are two layers, and only one moves:
 
 "Kotlin as primary mod language" = **a Kotlin front-end over the same §3 model — not a rewrite, not a contract change.** This is consistent with "design doc wins": we are adding a front-end, not contradicting §3. The §3 code examples may later be re-illustrated in Kotlin (cosmetic).
 
-**Toolchain resolution (the only feasibility risk, already resolved):** Kotlin's max `jvmTarget` is **25** (Kotlin compiler reference, April 2026) — it cannot emit *or reliably read* bytecode 26. The engine is currently pinned to bytecode 26. Fix: **target `--release 25` across the whole project**, keep the **JDK 26 toolchain + runtime**. MC 26.1 needs Java 25+ at *runtime* (satisfied by the 26 runtime) and never needs bytecode-26 *output*. FFM (§4) is a runtime API available on JDK 22+, unaffected by bytecode target. `strictfp` is mandatory ≥ JDK 17 regardless of target, so determinism is unaffected. This is recorded as a dated **amendment** to the "bytecode 26" choice in `DECISIONS.md`, not a contradiction of it.
+**Toolchain status (resolved, no bytecode drop needed):** Kotlin 2.4.0-RC2 (2026) explicitly added `jvmTarget 26` support — the compiler can now generate Java 26 bytecode. When 2.4.0 ships stable, pin it and the engine's existing bytecode target requires no change. **Do not drop `--release` to 25.** The `DECISIONS.md` 2026-06-02 entry's `--release 25` plan is superseded by this; the rest of that entry (engine stays Java, mod-facing API goes Kotlin-first, determinism rules) stands unchanged.
 
 ---
 
-## 2. Milestone K — Kotlin mod-development API  *(next; ~3 sessions)*
+## 2. Milestone K — Kotlin mod-development API  *(deferred — on standby; ~3 sessions when activated)*
 
-**Why next, before 4b:** (a) the user elevated it; (b) the engine is stable *right now* — the ideal moment to wrap it; wrapping a mid-4b moving target would be churn; (c) it directly answers the design's named #1 risk ("projects in this space die from empty mod ecosystems far more often than from scheduler bugs" — Three Honest Tensions §3); (d) it **cannot regress the determinism contract** because it does not touch the engine — lowest-risk, high-value.
+**Status: do not start yet.** Engine milestones (S, 4b) take priority. Kotlin is activated after the engine is stable against the live tick loop. Wrapping a mid-4b/S moving target would be churn; the Kotlin layer has zero risk of regressions and can wait.
+
+**When to activate:** after Milestone S is green, or after 4b if S finishes first. At that point, pin **Kotlin 2.4.0 stable** (RC2 already confirms `jvmTarget 26` support — no bytecode drop required; see §1 toolchain note) and proceed with K1–K3 below.
 
 ### K1 — Toolchain + build *(1 session)*
-1. Drop project bytecode target to `--release 25`; **rerun all 49 tests** — the real test is "does the existing engine still compile + stay green at release 25?" Run *before* adding any Kotlin. (The only way this breaks is if the engine used a Java-26-only feature; surface it here.)
-2. Add `kotlin("jvm")` plugin, pin a Kotlin 2.x version, set `jvmTarget = 25`.
-3. **Interop proof:** a trivial Kotlin class calls `PhaseScheduler` / builds an `Access`, compiles, runs. Don't assume Kotlin reads the engine's bytecode-25 classfiles — prove it.
-4. Decide layout: dedicated `mod-api-kotlin` source set (lighter) vs. subproject (cleaner long-term). Default to a source set unless interop forces a module.
-5. **DECISIONS.md:** dated amendment (done this session — see below).
+1. Add `kotlin("jvm")` plugin, pin Kotlin 2.4.0 (or latest stable ≥ 2.4.0), set `jvmTarget = 26`. **No `--release` change.** Rerun all 49 tests — must stay green.
+2. **Interop proof:** a trivial Kotlin class calls `PhaseScheduler` / builds an `Access`, compiles, runs.
+3. Decide layout: dedicated `mod-api-kotlin` source set (lighter) vs. subproject (cleaner long-term). Default to a source set unless interop forces a module.
 
-**Exit:** Kotlin compiles against the engine; 49 Java tests still green at release 25.
+**Exit:** Kotlin compiles against the engine at the existing bytecode target; 49 Java tests still green.
 
 ### K2 — Idiomatic Kotlin API surface *(1 session)*
 - `Component` Kotlin idiom: `data class Position(...) : Component` with `val` props (immutability by construction — stronger than Java records permit).
@@ -85,7 +86,7 @@ There are two layers, and only one moves:
 
 **Tests:** a live multi-region server run reproduces a recorded baseline hash sequence (the Phase-1 replay-diff method, extended to the regionized live path); harness still green.
 
-*Ordering note:* K and S are independent and can interleave. K is sequenced first per the directive; S can begin in parallel if a second work-stream opens.
+*Ordering note:* K is deferred. S is the next milestone after 4b, or can run first — they're independent once the decision is made. See §8 timeline.
 
 ---
 
@@ -151,12 +152,12 @@ Sessions, not calendar days — the repo works in sessions. Calendar is a rough 
 
 | Window | Milestone | Sessions | Confidence |
 |---|---|---|---|
-| **now → +3** | **K — Kotlin mod API** | 3 | High (no engine changes) |
-| +3 → +6 | S — Live server integration | 2–3 | Medium |
-| +6 → +11 | **4b — Dynamic split/merge** | 3–5 | **Low (hardest invariant — high variance)** |
-| +11 → +13 | 4d — Cleanses | 2 | Medium |
-| +13 → +17 | 5 — Native worldgen | 3–4 | Medium |
-| +17 → +21+ | 6 — Block cascade + redstone hook | 4+ | Low (scoped honestly) |
+| **now → +2/3** | **S — Live server integration** | 2–3 | Medium |
+| +2/3 → +7/8 | **4b — Dynamic split/merge** | 3–5 | **Low (hardest invariant — high variance)** |
+| +7/8 → +10/11 | **K — Kotlin mod API** *(activate here)* | 3 | High (no engine changes) |
+| +10/11 → +12/13 | 4d — Cleanses | 2 | Medium |
+| +12/13 → +16/17 | 5 — Native worldgen | 3–4 | Medium |
+| +16/17 → +21+ | 6 — Block cascade + redstone hook | 4+ | Low (scoped honestly) |
 
 **4b is the high-variance item** — the design itself calls it "the single hardest invariant in the whole design." Treat its estimate as a placeholder, not a commitment; the 4b.0 oracle test will reveal the true difficulty early.
 
@@ -164,4 +165,4 @@ Sessions, not calendar days — the repo works in sessions. Calendar is a rough 
 
 ## 9. Immediate next action
 
-Begin **K1**: drop to `--release 25`, rerun the 49 tests (must stay green), then add the Kotlin plugin and prove interop. Nothing downstream proceeds until that baseline is green.
+Begin **Milestone S**: wire `RegionCoordinator` into the live `MinecraftServer.tickServer` tick loop, generalize the Phase-1 `syncFromMC`/`applyToMC` pattern to N regions, add `GlobalTickThread`, and make `LatticeServer` `AutoCloseable`. This closes the gap between the proven-in-isolation engine and the actual live server. Kotlin (Milestone K) is on standby — do not start it yet.
