@@ -1,5 +1,7 @@
 package io.github.mainulf.lattice.ecs;
 
+import java.util.List;
+
 /**
  * View backed by a precomputed entity chunk — a contiguous slice of the phase's sorted
  * matching-entity array, hoisted to the caller thread before the parallel fan-out.
@@ -30,12 +32,14 @@ final class ChunkedView implements View {
     private final LatticeRng     rng;
     /** Precomputed, sorted subset of this phase's entity set for this chunk. */
     private final long[]         chunkIds;
+    private final List<Object>   inbox;
 
-    ChunkedView(ComponentStore store, Access access, LatticeRng rng, long[] chunkIds) {
+    ChunkedView(ComponentStore store, Access access, LatticeRng rng, long[] chunkIds, List<Object> inbox) {
         this.store    = store;
         this.access   = access;
         this.rng      = rng;
         this.chunkIds = chunkIds;
+        this.inbox    = inbox;
     }
 
     @Override
@@ -64,6 +68,11 @@ final class ChunkedView implements View {
     @Override
     public LatticeRng rng() {
         return rng;
+    }
+
+    @Override
+    public List<Object> inbox() {
+        return inbox;
     }
 
     private void checkRead(Class<? extends Component> type) {

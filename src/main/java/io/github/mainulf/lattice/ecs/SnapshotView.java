@@ -1,16 +1,20 @@
 package io.github.mainulf.lattice.ecs;
 
+import java.util.List;
+
 /** View backed by an immutable snapshot of the store taken before the phase began. */
 final class SnapshotView implements View {
 
     private final ComponentStore snapshot;
     private final Access access;
     private final LatticeRng rng;
+    private final List<Object> inbox;
 
-    SnapshotView(ComponentStore snapshot, Access access, LatticeRng rng) {
+    SnapshotView(ComponentStore snapshot, Access access, LatticeRng rng, List<Object> inbox) {
         this.snapshot = snapshot;
         this.access   = access;
         this.rng      = rng;
+        this.inbox    = inbox;
     }
 
     @Override
@@ -35,6 +39,11 @@ final class SnapshotView implements View {
     @Override
     public LatticeRng rng() {
         return rng;
+    }
+
+    @Override
+    public List<Object> inbox() {
+        return inbox;
     }
 
     private void checkRead(Class<? extends Component> type) {

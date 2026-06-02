@@ -2,6 +2,7 @@ package io.github.mainulf.lattice.ecs;
 
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.Comparator;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -69,6 +70,13 @@ public final class PhaseScheduler implements AutoCloseable {
     /** Pending cross-region messages from the last completed tick. Cleared at tick start. */
     private final List<CommitBuffer.MessageOp> pendingMessages = new ArrayList<>();
 
+    /**
+     * Messages delivered to this region before the current tick (populated by
+     * {@link RegionCoordinator} or {@link Region#deliverMessages}). Immutable during
+     * execution; reset to empty at tick start.
+     */
+    private List<Object> currentInbox = Collections.emptyList();
+
     public PhaseScheduler(ComponentStore store) {
         this.store = store;
     }
@@ -116,6 +124,16 @@ public final class PhaseScheduler implements AutoCloseable {
     }
 
     /**
+     * Set the inbox for the upcoming tick. Called by {@link RegionCoordinator} (or
+     * {@link Region#deliverMessages}) before {@link #tick()}. The list must not be
+     * mutated after this call; it is exposed read-only to systems via
+     * {@link View#inbox()}.
+     */
+    public void setInbox(List<Object> inbox) {
+        this.currentInbox = inbox != null ? Collections.unmodifiableList(inbox) : Collections.emptyList();
+    }
+
+    /**
      * Drain and return cross-region messages staged during the last tick.
      * The region infrastructure (Phase 4) calls this to route messages to their
      * target schedulers before the next tick begins.
@@ -160,8 +178,11 @@ public final class PhaseScheduler implements AutoCloseable {
         pendingMessages.clear();
         accComputeNs = 0;
         accCommitNs  = 0;
+        // Capture the inbox snapshot for this tick; reset for next tick.
+        List<Object> tickInbox = currentInbox;
+        currentInbox = Collections.emptyList();
         for (Phase phase : Phase.values()) {
-            runPhase(phase);
+            runPhase(phase, tickInbox);
         }
         tickCount++;
         lastComputeNs = accComputeNs;
@@ -176,7 +197,7 @@ public final class PhaseScheduler implements AutoCloseable {
 
     // ── Internal ──────────────────────────────────────────────────────────────
 
-    private void runPhase(Phase phase) {
+    private void runPhase(Phase phase, List<Object> inbox) {
         List<Registration> inPhase = registrations.stream()
             .filter(r -> r.phase() == phase)
             .sorted(Comparator.comparingInt(Registration::priority)
@@ -191,8 +212,8 @@ public final class PhaseScheduler implements AutoCloseable {
         // on the caller thread, so the live store is frozen during compute (§1.2).
         long t0 = System.nanoTime();
         List<CommitBuffer> buffers = (pool != null)
-            ? runPhaseParallel(inPhase)
-            : runPhaseSerial(inPhase);
+            ? runPhaseParallel(inPhase, inbox)
+            : runPhaseSerial(inPhase, inbox);
         long t1 = System.nanoTime();
         applyCommits(buffers);
         long t2 = System.nanoTime();
@@ -201,10 +222,10 @@ public final class PhaseScheduler implements AutoCloseable {
         accCommitNs  += t2 - t1;
     }
 
-    private List<CommitBuffer> runPhaseSerial(List<Registration> inPhase) {
+    private List<CommitBuffer> runPhaseSerial(List<Registration> inPhase, List<Object> inbox) {
         List<CommitBuffer> buffers = new ArrayList<>(inPhase.size());
         for (Registration reg : inPhase) {
-            buffers.add(executeSystem(reg));
+            buffers.add(executeSystem(reg, inbox));
         }
         return buffers;
     }
@@ -225,12 +246,12 @@ public final class PhaseScheduler implements AutoCloseable {
      * {@code (priority, systemId, entityId, type)} then reproduces the same total order
      * at every core count, making execution order invisible to results.
      */
-    private List<CommitBuffer> runPhaseParallel(List<Registration> inPhase) {
+    private List<CommitBuffer> runPhaseParallel(List<Registration> inPhase, List<Object> inbox) {
         List<Future<CommitBuffer>> futures = new ArrayList<>();
 
         for (Registration reg : inPhase) {
             if (reg.access().isOpaque()) {
-                futures.add(CompletableFuture.completedFuture(executeSystem(reg)));
+                futures.add(CompletableFuture.completedFuture(executeSystem(reg, inbox)));
             } else {
                 // Hoist entity-type intersection to caller thread.
                 long[] matching = precomputeMatchingEntities(reg);
@@ -240,7 +261,7 @@ public final class PhaseScheduler implements AutoCloseable {
                 int chunkSize = (m + chunks - 1) / chunks;
                 for (int start = 0; start < m; start += chunkSize) {
                     long[] chunk = Arrays.copyOfRange(matching, start, Math.min(start + chunkSize, m));
-                    futures.add(pool.submit(() -> executeSystemChunk(reg, chunk)));
+                    futures.add(pool.submit(() -> executeSystemChunk(reg, chunk, inbox)));
                 }
             }
         }
@@ -278,13 +299,13 @@ public final class PhaseScheduler implements AutoCloseable {
      * Execute a system over the full entity set (serial path and opaque parallel path).
      * Sets {@code IN_SYSTEM_THREAD} only for declared (non-opaque) systems.
      */
-    private CommitBuffer executeSystem(Registration reg) {
+    private CommitBuffer executeSystem(Registration reg, List<Object> inbox) {
         LatticeRng   rng = LatticeRng.forSystem(worldSeed, tickCount, reg.id());
         CommitBuffer buf = new CommitBuffer(reg.id(), reg.priority(), reg.access());
         boolean isDeclared = !reg.access().isOpaque();
         if (isDeclared) LatticeRng.IN_SYSTEM_THREAD.set(Boolean.TRUE);
         try {
-            reg.system().run(new SnapshotView(store, reg.access(), rng), buf);
+            reg.system().run(new SnapshotView(store, reg.access(), rng, inbox), buf);
         } finally {
             if (isDeclared) LatticeRng.IN_SYSTEM_THREAD.remove();
         }
@@ -295,12 +316,12 @@ public final class PhaseScheduler implements AutoCloseable {
      * Execute a system over a precomputed entity chunk (entity-range parallel path).
      * Always a declared (non-opaque) system, so IN_SYSTEM_THREAD is always set.
      */
-    private CommitBuffer executeSystemChunk(Registration reg, long[] chunkEntities) {
+    private CommitBuffer executeSystemChunk(Registration reg, long[] chunkEntities, List<Object> inbox) {
         LatticeRng   rng = LatticeRng.forSystem(worldSeed, tickCount, reg.id());
         CommitBuffer buf = new CommitBuffer(reg.id(), reg.priority(), reg.access());
         LatticeRng.IN_SYSTEM_THREAD.set(Boolean.TRUE);
         try {
-            reg.system().run(new ChunkedView(store, reg.access(), rng, chunkEntities), buf);
+            reg.system().run(new ChunkedView(store, reg.access(), rng, chunkEntities, inbox), buf);
         } finally {
             LatticeRng.IN_SYSTEM_THREAD.remove();
         }

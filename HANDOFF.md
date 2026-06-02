@@ -1,14 +1,14 @@
-# HANDOFF — Phase 3 PoC complete; Phase 4 (inter-region parallelism) next
+# HANDOFF — Phase 4 started: Region + RegionCoordinator + §1.6 foundation green
 
-**Written:** 2026-06-02 (session 7 update)
-**Session:** Phase 3 PoC — snapshot removal + entity-range splitting + benchmark, 38 tests green
+**Written:** 2026-06-01 (session 8 update)
+**Session:** Phase 4 (inter-region parallelism): Region ownership, RegionCoordinator, View.inbox() receive-side API, §1.6 test green at 1+4 coordinator cores
 **Next instance:** read `CLAUDE.md` and this file for state.
 
 ---
 
 ## 1. Where we are
 
-**Phase 0 complete. Phase 1 complete. Phase 2 complete. Phase 3 complete (including PoC).**
+**Phase 0 complete. Phase 1 complete. Phase 2 complete. Phase 3 complete. Phase 4 started (4a partial, 4c foundation, §1.6 green).**
 
 Phase 3 PoC done this session:
 - **Entity-range splitting** — `PhaseScheduler` now fans out each declared system's entity set into N contiguous chunks (one per core), each running as a separate pool task via a `ChunkedView`. This is data parallelism (MCMT axis), not task parallelism.
@@ -60,7 +60,7 @@ Timing decomposed via `PhaseScheduler.lastTickComputeNs/CommitNs()` (measured, n
 
 Deferred from Phase 3: entity-column cleanse (§2.3) and lighting cleanse (§2.4). These are Phase 4 pre-work, not required for the Phase 3 PoC exit.
 
-**Next: Phase 4** — inter-region parallelism (axis A): region ownership, dynamic split/merge with Folia's invariant, the `GlobalTickThread`, and cross-region deferral.
+**Phase 4 started (session 8):** `Region` + `RegionCoordinator` + `View.inbox()` + §1.6 test green at 1 and 4 coordinator cores. Dynamic split/merge (4b) and A+B composing PoC (4e) remain.
 
 ### Test counts (all green)
 
@@ -68,21 +68,39 @@ Deferred from Phase 3: entity-column cleanse (§2.3) and lighting cleanse (§2.4
 |---|---|
 | `DeterminismHarnessTest` | 23 |
 | `EcsTest` | 11 |
+| `RegionCoordinatorTest` | 9 |
 | `LatticeServerTest` | 4 |
-| **Total** | **38** |
-
-### Test counts (all green)
-
-| Suite | Tests |
-|---|---|
-| `DeterminismHarnessTest` | 23 |
-| `EcsTest` | 11 |
-| `LatticeServerTest` | 4 |
-| **Total** | **38** |
+| **Total** | **47** |
 
 ---
 
-## 2. What was built session 7 (Phase 3 PoC)
+## 2. What was built session 8 (Phase 4 — Region + RegionCoordinator)
+
+### New source files (`src/main/java/io/github/mainulf/lattice/ecs/`)
+
+| File | Role |
+|---|---|
+| `Region.java` | Thin wrapper: long id + ComponentStore + PhaseScheduler + pendingInbox. `deliverMessages()` appends to pending; `tick()` atomically passes pending inbox to scheduler and resets. `drainMessages()` delegates to scheduler. `AutoCloseable`. |
+| `RegionCoordinator.java` | Per-tick protocol: tick all regions (pool if `setParallelism > 1`, axis A) → global `awaitAll` barrier → drain messages in sorted-region-id order → route to target inboxes. Self-messages (A messages own region id) routed back identically. `AutoCloseable`. |
+
+### Modified source files (`src/main/java/io/github/mainulf/lattice/ecs/`)
+
+| File | Change |
+|---|---|
+| `View.java` | Added `default List<Object> inbox()` — the receive-side API for cross-region messages. Default returns `List.of()` so existing code/tests need no changes. |
+| `SnapshotView.java` | Accepts `List<Object> inbox` in constructor; exposes it via `inbox()`. |
+| `ChunkedView.java` | Accepts `List<Object> inbox` in constructor; exposes it via `inbox()`. |
+| `PhaseScheduler.java` | Added `currentInbox` field + `setInbox(List<Object>)` method. `tick()` captures inbox at tick start, resets to empty, passes to each `runPhase` call → view constructors. |
+
+### New test file (`src/test/java/.../ecs/`)
+
+| File | Tests |
+|---|---|
+| `RegionCoordinatorTest.java` | 9 tests: single-region sanity, duplicate-id guard, cross-region one-tick delivery, unknown-target drop, self-message one-tick delivery, §1.6 co/cross/parallel identical, axis-A parallel hash, inbox-empty, inbox-unmodifiable. |
+
+---
+
+## 2b. What was built session 7 (Phase 3 PoC)
 
 ### New source files (`src/main/java/io/github/mainulf/lattice/ecs/`)
 
@@ -104,7 +122,7 @@ Added `runBenchmark` task (`JavaExec` → `EcsBenchmark.main`).
 
 ---
 
-## 2b. What was built session 6 (Phase 3 tasks 4a–4d)
+## 2c. What was built session 6 (Phase 3 tasks 4a–4d)
 
 ### Modified source files (`src/main/java/io/github/mainulf/lattice/ecs/`)
 
@@ -174,27 +192,32 @@ All facts from Phase 2 HANDOFF (§3) still apply. Below are Phase 3 additions.
 
 ---
 
-## 4. What Phase 4 must do (inter-region parallelism, axis A)
+## 4. What Phase 4 still needs (inter-region parallelism, axis A)
 
 Design §5 Phase 4 exit: "PoC, full — both axes A and B live and composing."
 
-### 4a. Region ownership model
+### 4a. Region ownership model — DONE (static regions only)
 
-Each region owns a `ComponentStore` + `PhaseScheduler`. Entities are owned by exactly one region (by spatial assignment — chunk-based or entity-bounding-box). The `GlobalTickThread` owns no chunks (Folia's pattern) and handles: player join, save coordination, console.
+`Region` and `RegionCoordinator` built. Entities are manually assigned to regions for now.
+**Remaining**: `GlobalTickThread` (player join, save, console) — deferred until real MC integration.
 
-### 4b. Dynamic split/merge with Folia's invariant
+### 4b. Dynamic split/merge with Folia's invariant — NOT DONE
 
-Regions split and merge based on entity density / player proximity. Invariant: a ticking region may not begin ticking adjacent to another ticking region; adjacent regions are forced to merge. Regions may not grow while ticking.
+Regions split and merge based on entity density / player proximity. Invariant: a ticking region may not begin ticking adjacent to another ticking region; adjacent regions are forced to merge. Regions may not grow while ticking. This is the hardest part of Phase 4.
 
-### 4c. Cross-region deferral (§1.6 test target)
+### 4c. Cross-region deferral (§1.6 test target) — DONE
 
-`commit.message(targetRegion, payload)` is already implemented (Phase 2). Phase 4 must wire the actual routing: `PhaseScheduler.drainMessages()` after each tick, route to target region's inbox, deliver at start of next tick. **Immediately test §1.6**: assert interaction outcome is identical whether co-regional or cross-regional.
+`View.inbox()` receive-side API added. `RegionCoordinator` routes messages from all regions after the per-tick global barrier, in deterministic sorted-region-id order. §1.6 test green at 1 and 4 coordinator cores.
 
-### 4d. Entity-column cleanse (§2.3) and lighting cleanse (§2.4)
+**Uniform interaction model (§1.6 key):** both co-regional and cross-regional cases use `commit.message(targetRegionId, payload)` + `view.inbox()`. A messages its own region id in the co-regional case; coordinator routes it back. Identical one-tick deferred latency. This is what makes region boundaries outcome-neutral.
 
-Deferred from Phase 3. §2.3: archetype columns are single-writer by construction (region owns its store). Formal cleanse is just documentation + enforcement. §2.4: stateless Starlight-style lighting — a `LIGHTING`-phase declared system, no global engine state.
+### 4d. Entity-column cleanse (§2.3) and lighting cleanse (§2.4) — DEFERRED
 
-### 4e. PoC exit: both axes composing
+§2.3: archetype columns are single-writer by construction (region owns its store). Formal cleanse is just documentation + enforcement. §2.4: stateless Starlight-style lighting — a `LIGHTING`-phase declared system, no global engine state.
+
+### 4e. PoC exit: both axes composing — NOT DONE
+
+**Known gap:** A+B composing (coordinator parallelism AND scheduler parallelism simultaneously) is not yet tested. §1.6 holds for axis-A-alone (coordinator parallelism, serial schedulers). The combined case (each region's scheduler also fans out entity chunks) is deferred to 4e.
 
 Run the §5 dense-scene benchmark with both A (multiple regions) and B (entity-range splitting within each region). Two curves: MSPT vs. core count (should steepen vs. Phase 3 single-region result), world-state hash vs. core count (flat line — §1.6 invariant holds through split/merge).
 

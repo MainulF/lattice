@@ -1,5 +1,7 @@
 package io.github.mainulf.lattice.ecs;
 
+import java.util.List;
+
 /**
  * Read handle backed by the frozen pre-phase snapshot. A system can only observe
  * components declared in its Access.reads. Any access outside the declaration is
@@ -24,4 +26,14 @@ public interface View {
      * Use {@link LatticeRng#forEntity(long)} to obtain a per-entity child stream.
      */
     LatticeRng rng();
+
+    /**
+     * Messages delivered to this region before the current tick began (§1.6).
+     * Payloads from {@code commit.message(thisRegionId, payload)} staged in the
+     * previous tick, routed here by the {@link RegionCoordinator}.
+     * The list is immutable for the duration of the tick.
+     * Returns an empty list if no messages were delivered (default for schedulers
+     * not managed by a coordinator).
+     */
+    default List<Object> inbox() { return List.of(); }
 }
