@@ -4,6 +4,47 @@ Lightweight ADR log. Append a dated entry for every pinned choice.
 
 ---
 
+## 2026-06-02 — Kotlin as the primary mod-development language
+
+Kotlin becomes the **primary mod-authoring language**; Java stays fully supported. This is a
+front-end decision, not a contract change (see `ROADMAP.md` §1).
+
+### Engine stays Java; only the §3 mod-facing API goes Kotlin-first
+
+The deterministic engine (`PhaseScheduler`, `ComponentStore`, `Commit`/`CommitBuffer`,
+`RegionCoordinator`/`Region`, `LatticeRng`, `WorldStateHasher`) **remains Java** — it is the hot
+tick path, already audited for `strictfp` + `StrictMath` (§1.5), and green. A Kotlin front-end
+wraps the *same* §3 types (`Component`, `LatticeSystem`, `Access`, `View`, `Commit`, `Phase`),
+compiling down to exactly the types the scheduler already reads. Consistent with "design doc wins":
+adding a front-end, not contradicting §3.
+
+### Bytecode target dropped to `--release 25` (amends the "JDK 26" choice below)
+
+Kotlin's max `jvmTarget` is **25** (Kotlin compiler reference, April 2026) — it cannot emit or
+reliably read bytecode 26. Resolution: **target `--release 25` across the whole project**, keep the
+**JDK 26 toolchain + runtime** unchanged. This is sound because:
+- MC 26.1 requires Java 25+ at *runtime* (the 26 runtime satisfies it); it never needs bytecode-26 *output*.
+- FFM (§4) is a runtime API on JDK 22+ — unaffected by bytecode target.
+- `strictfp` is mandatory since JDK 17 regardless of target — determinism is unaffected.
+
+So this **amends, not contradicts**, the 2026-05-31 "JDK 26" entry: JDK 26 stays as toolchain and
+runtime; only the emitted bytecode version drops to 25, necessitated by the Kotlin requirement.
+Validation gate: the existing 49 tests must stay green after the `--release 25` change, *before* any
+Kotlin is added (ROADMAP K1).
+
+### Kotlin version: pinned 2.x, `jvmTarget = 25` (exact patch confirmed in K1)
+
+Kotlin 2.x via the `kotlin("jvm")` Gradle plugin. `kotlin-stdlib` ships with the loader. Exact patch
+version pinned during K1 after confirming clean interop with the bytecode-25 engine classfiles.
+
+### Kotlin determinism rules (enforced by wrappers + doc, see ROADMAP §7)
+
+`kotlin.math.{sin,cos,…}` delegates to `java.lang.Math`, not `StrictMath` — forbidden on the tick
+path; `lattice.math.*` StrictMath wrappers are the safe path. Coroutines forbidden on the
+deterministic tick path (scheduling nondeterminism, same reasoning as SIMD/GPU §1.5).
+
+---
+
 ## 2026-05-31 — Phase 0 initial toolchain
 
 ### Minecraft version: 26.1
