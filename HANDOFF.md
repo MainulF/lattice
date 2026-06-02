@@ -68,9 +68,9 @@ Deferred from Phase 3: entity-column cleanse (§2.3) and lighting cleanse (§2.4
 |---|---|
 | `DeterminismHarnessTest` | 23 |
 | `EcsTest` | 11 |
-| `RegionCoordinatorTest` | 10 |
+| `RegionCoordinatorTest` | 11 |
 | `LatticeServerTest` | 4 |
-| **Total** | **48** |
+| **Total** | **49** |
 
 ---
 
@@ -81,6 +81,7 @@ Deferred from Phase 3: entity-column cleanse (§2.3) and lighting cleanse (§2.4
 | Test | Description |
 |---|---|
 | `composedAxesAB_independentRegions_hashFlatAcrossAllConfigurations` | Phase 4 exit criterion: A+B composing does not break flat-hash invariant. 4 regions × 25 entities, gravity (Phase.AI) + movement (Phase.MOVEMENT). Per-tick XOR hash identical across (A=1,B=1), (A=4,B=1), (A=1,B=4), (A=2,B=2). |
+| `crossRegionMessages_inboxIdenticalUnderSchedulerParallelism` | Locks down the cross-region message path under B>1. 10 sender entities each message their entity ID; receiver records inbox as `List<Long>` per tick. Asserts inbox contents AND order are identical between B=1 (serial) and B=4 (parallel, coord A=2). Confirms `applyCommits` message accumulation order (chunk buffers in submission order → entity-ID order in inbox) is a tested invariant, not just an argument. |
 
 ### Modified benchmark (`src/main/java/.../ecs/EcsBenchmark.java`)
 
@@ -257,6 +258,8 @@ Regions split and merge based on entity density / player proximity. Invariant: a
 The Phase 4 PoC exit criterion ("both axes A and B live and composing") is met. The two headline curves are available:
 1. MSPT vs (A,B) config — peak 3.85× at (A=4,B=2), exceeding the Phase 3 B-only ceiling (1.38×).
 2. Hash vs config — flat line (`3d98ce7ad6ab2880`) at all configs.
+
+**Message ordering under B>1 — now a tested invariant (not just an assumption).** `crossRegionMessages_inboxIdenticalUnderSchedulerParallelism` verifies that inbox contents AND order match between B=1 and B=4. The invariant: chunk buffers are collected in submission order → contiguous in-order entity slices → entity-ID order in inbox. This closes the previously-untested gap where §1.6 (session 8) and B>1 (session 9) were green separately but their intersection was not exercised.
 
 ---
 

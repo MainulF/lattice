@@ -2,6 +2,8 @@ package io.github.mainulf.lattice.ecs;
 
 import org.junit.jupiter.api.Test;
 
+import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -547,5 +549,86 @@ class RegionCoordinatorTest {
             }
         }
         return log;
+    }
+
+    // ── 8. Cross-region messages × scheduler parallelism (B>1) ──────────────────
+
+    /**
+     * §1.6 + B-axis composed: the cross-region message path must be unaffected by
+     * sender-region entity-range splitting (B>1).
+     *
+     * <p>10 sender entities each message their entity ID to the receiver region every tick.
+     * The receiver records the per-tick inbox as a {@code List<Long>}. With B=4 (parallel
+     * sender), chunk buffers are collected in submission order (chunk0..chunk3), so inbox
+     * order must be identical to B=1 (serial). Both list contents AND order are asserted.
+     *
+     * <p>This locks down the currently-assumed invariant in {@link PhaseScheduler#applyCommits}:
+     * messages from chunk buffers are appended in submission order → chunk-contiguous entity
+     * slices → entity-ID order in the inbox, matching the serial path.
+     */
+    @Test
+    void crossRegionMessages_inboxIdenticalUnderSchedulerParallelism() {
+        int ticks      = 5;
+        int numSenders = 10;
+
+        List<List<Long>> serialLog   = runSenderReceiverScenario(ticks, numSenders, 1, 1);
+        List<List<Long>> parallelLog = runSenderReceiverScenario(ticks, numSenders, 2, 4);
+
+        assertTrue(serialLog.get(0).isEmpty(),   "tick 1: no messages (serial)");
+        assertTrue(parallelLog.get(0).isEmpty(), "tick 1: no messages (B=4)");
+
+        for (int t = 1; t < ticks; t++) {
+            assertEquals(serialLog.get(t), parallelLog.get(t),
+                "§1.6+B-axis inbox mismatch at tick " + (t + 1));
+        }
+    }
+
+    /**
+     * Run a 2-region scenario: N sender entities (region 0, scheduler parallelism B) each
+     * message their entity ID to region 1 every tick. Region 1 records the received inbox
+     * (as List&lt;Long&gt;) per tick. Coordinator parallelism = A.
+     */
+    @SuppressWarnings("unchecked")
+    private List<List<Long>> runSenderReceiverScenario(
+            int ticks, int numSenders, int coordCores, int senderSchedulerCores) {
+        ComponentStore senderStore = new ComponentStore();
+        for (long id = 1; id <= numSenders; id++) {
+            senderStore.spawn(id, new Position(id, 0, 0));
+        }
+        ComponentStore receiverStore = new ComponentStore();
+        receiverStore.spawn(100L, new Position(0, 0, 0));
+
+        List<Long>[] inboxLog = new List[ticks];
+        int[] curTick = {0};
+
+        try (RegionCoordinator coord = new RegionCoordinator()) {
+            coord.setParallelism(coordCores);
+
+            PhaseScheduler senderSched = new PhaseScheduler(senderStore);
+            senderSched.setParallelism(senderSchedulerCores);
+            Region r0 = new Region(0L, senderStore, senderSched);
+            coord.addRegion(r0);
+
+            Region r1 = new Region(1L, receiverStore, new PhaseScheduler(receiverStore));
+            coord.addRegion(r1);
+
+            r0.scheduler().register("send-ids", (view, commit) -> {
+                for (long id : view.query(Position.class)) {
+                    commit.message(1L, id);
+                }
+            }, Access.builder().reads(Position.class).build(), Phase.MOVEMENT, 0);
+
+            r1.scheduler().register("record-inbox", (view, commit) -> {
+                List<Long> ids = new ArrayList<>();
+                for (Object o : view.inbox()) ids.add((Long) o);
+                inboxLog[curTick[0]] = ids;
+            }, Access.OPAQUE, Phase.MOVEMENT, 0);
+
+            for (int t = 0; t < ticks; t++) {
+                curTick[0] = t;
+                coord.tick();
+            }
+        }
+        return Arrays.asList(inboxLog);
     }
 }
