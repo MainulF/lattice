@@ -17,4 +17,11 @@ public interface View {
      * Iteration order is stable across runs — sorted by entity ID.
      */
     long[] query(Class<? extends Component>... types);
+
+    /**
+     * The deterministic per-system RNG stream (§1.4). Derived from
+     * {@code (worldSeed, tick, systemId)} — never shared, never affected by thread order.
+     * Use {@link LatticeRng#forEntity(long)} to obtain a per-entity child stream.
+     */
+    LatticeRng rng();
 }

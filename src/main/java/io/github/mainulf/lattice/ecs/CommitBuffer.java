@@ -13,15 +13,17 @@ final class CommitBuffer implements Commit {
     record RemoveOp(String systemId, int systemPriority, long entity, Class<? extends Component> type) {}
     record SpawnOp(long entity, Component[] components) {}
     record KillOp(String systemId, int systemPriority, long entity) {}
+    record MessageOp(long targetRegion, Object payload) {}
 
     private final String systemId;
     private final int    systemPriority;
     private final Access access;
 
-    private final List<SetOp>    sets    = new ArrayList<>();
-    private final List<RemoveOp> removes = new ArrayList<>();
-    private final List<SpawnOp>  spawns  = new ArrayList<>();
-    private final List<KillOp>   kills   = new ArrayList<>();
+    private final List<SetOp>     sets     = new ArrayList<>();
+    private final List<RemoveOp>  removes  = new ArrayList<>();
+    private final List<SpawnOp>   spawns   = new ArrayList<>();
+    private final List<KillOp>    kills    = new ArrayList<>();
+    private final List<MessageOp> messages = new ArrayList<>();
 
     CommitBuffer(String systemId, int systemPriority, Access access) {
         this.systemId       = systemId;
@@ -54,8 +56,14 @@ final class CommitBuffer implements Commit {
         kills.add(new KillOp(systemId, systemPriority, entity));
     }
 
-    List<SetOp>    sets()    { return sets;    }
-    List<RemoveOp> removes() { return removes; }
-    List<SpawnOp>  spawns()  { return spawns;  }
-    List<KillOp>   kills()   { return kills;   }
+    @Override
+    public void message(long targetRegion, Object payload) {
+        messages.add(new MessageOp(targetRegion, payload));
+    }
+
+    List<SetOp>     sets()     { return sets;     }
+    List<RemoveOp>  removes()  { return removes;  }
+    List<SpawnOp>   spawns()   { return spawns;   }
+    List<KillOp>    kills()    { return kills;     }
+    List<MessageOp> messages() { return messages;  }
 }

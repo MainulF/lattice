@@ -106,6 +106,16 @@ public final class LatticeServer {
         return WorldStateHasher.hash(store, componentTypes);
     }
 
+    /**
+     * Set the world seed used to key per-system RNG streams (§1.4).
+     * Call this once at server startup (before the first tick) so declared systems that
+     * draw from {@code view.rng()} get streams keyed by the actual world seed.
+     * Wired from {@code MinecraftServer} via the Phase 3 patch.
+     */
+    public void setWorldSeed(long seed) {
+        scheduler.setWorldSeed(seed);
+    }
+
     public ComponentStore store() {
         return store;
     }

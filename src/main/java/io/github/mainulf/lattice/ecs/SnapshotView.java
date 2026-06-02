@@ -5,10 +5,12 @@ final class SnapshotView implements View {
 
     private final ComponentStore snapshot;
     private final Access access;
+    private final LatticeRng rng;
 
-    SnapshotView(ComponentStore snapshot, Access access) {
+    SnapshotView(ComponentStore snapshot, Access access, LatticeRng rng) {
         this.snapshot = snapshot;
         this.access   = access;
+        this.rng      = rng;
     }
 
     @Override
@@ -28,6 +30,11 @@ final class SnapshotView implements View {
     public final long[] query(Class<? extends Component>... types) {
         for (Class<? extends Component> t : types) checkRead(t);
         return snapshot.query(types);
+    }
+
+    @Override
+    public LatticeRng rng() {
+        return rng;
     }
 
     private void checkRead(Class<? extends Component> type) {

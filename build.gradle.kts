@@ -129,6 +129,17 @@ tasks.named<JavaExec>("runServer") {
     }
 }
 
+tasks.register<JavaExec>("runBenchmark") {
+    group = "lattice"
+    description = "Run the Phase 3 PoC MSPT benchmark (10k entities, 1/2/4/8 cores)"
+    dependsOn("classes")
+    classpath = sourceSets.main.get().runtimeClasspath
+    mainClass.set("io.github.mainulf.lattice.ecs.EcsBenchmark")
+    javaLauncher.set(javaToolchains.launcherFor {
+        languageVersion.set(JavaLanguageVersion.of(26))
+    })
+}
+
 tasks.register("applyPatches") {
     group = "lattice"
     description = "Extract decompiled MC sources to work/server and apply committed patches"

@@ -1,0 +1,74 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Mainul Fahad <mfahad70@stuy.edu>
+Date: Mon, 1 Jun 2026 20:48:11 -0400
+Subject: [PATCH] Phase 3: wire worldSeed into LatticeServer at tick 1
+
+
+diff --git a/net/minecraft/server/MinecraftServer.java b/net/minecraft/server/MinecraftServer.java
+index aab1095d5b1d0e89271925c61bdfcc69a6021147..0414eae47e185ff7b3a6729a9ed3a0516d4fff91 100644
+--- a/net/minecraft/server/MinecraftServer.java
++++ b/net/minecraft/server/MinecraftServer.java
+@@ -993,18 +993,31 @@ public abstract class MinecraftServer extends ReentrantBlockableEventLoop<TickTa
+ 
+         this.tickCount++;
+         this.tickRateManager.tick();
+-        if (this.tickCount == 1) LOGGER.info("[Lattice] seam alive — tick 1");
++        if (this.tickCount == 1) {
++            LOGGER.info("[Lattice] seam alive — tick 1");
++            this.lattice.setWorldSeed(this.worldGenSettings.options().seed());
++        }
+         // Scenario init before first tickChildren: gamerules + item spawns are set before any physics runs.
+         if (this.tickCount == 1 && System.getProperty("lattice.tickLimit") != null) {
+             latticeInitScenario();
+         }
+-        this.lattice.tick(() -> this.tickChildren(haveTime));
+         // Lattice Phase-1 hash oracle — enabled via -Dlattice.tickLimit=N
+         String latticeLimit = System.getProperty("lattice.tickLimit");
+         if (latticeLimit != null) {
+-            // Headless servers don't drive entity ticking via the player-range system.
+-            // Tick scenario entities explicitly (bit-identical to what vanilla does with a player).
+             net.minecraft.server.level.ServerLevel ow = this.overworld();
++            // When movement is carved into MovementSystem, sync MC entity state into the ECS
++            // store BEFORE lattice.tick() so the MOVEMENT-phase snapshot sees current positions.
++            if (io.github.mainulf.lattice.LatticeServer.MOVEMENT_CARVED) {
++                this.lattice.syncFromMC(ow.getAllEntities());
++            }
++            this.lattice.tick(() -> this.tickChildren(haveTime));
++            // When carved: apply ECS-computed positions/velocities back to MC entities before
++            // the remainder of ItemEntity.tick() (age, pickup, etc.) runs.
++            if (io.github.mainulf.lattice.LatticeServer.MOVEMENT_CARVED) {
++                this.lattice.applyToMC(ow.getAllEntities());
++            }
++            // Headless servers don't drive entity ticking via the player-range system.
++            // Tick scenario entities explicitly (gravity+move skipped by ItemEntity patch when carved).
+             java.util.List<net.minecraft.world.entity.Entity> toTick = new java.util.ArrayList<>();
+             for (net.minecraft.world.entity.Entity e : ow.getAllEntities()) toTick.add(e);
+             for (net.minecraft.world.entity.Entity e : toTick) {
+@@ -1015,6 +1028,8 @@ public abstract class MinecraftServer extends ReentrantBlockableEventLoop<TickTa
+             if (this.tickCount >= Integer.parseInt(latticeLimit)) {
+                 this.halt(false);
+             }
++        } else {
++            this.lattice.tick(() -> this.tickChildren(haveTime));
+         }
+         if (nano - this.lastServerStatus >= STATUS_EXPIRE_TIME_NANOS) {
+             this.lastServerStatus = nano;
+@@ -1127,12 +1142,15 @@ public abstract class MinecraftServer extends ReentrantBlockableEventLoop<TickTa
+             level.getGameRules().set(net.minecraft.world.level.gamerules.GameRules.SPAWN_MOBS, false, this);
+             level.getGameRules().set(net.minecraft.world.level.gamerules.GameRules.SPAWN_MONSTERS, false, this);
+         }
+-        // Force-load the spawn chunk to ENTITY_TICKING so items tick without a player connection.
++        // Load the spawn chunk at FULL level (PLAYER_LOADING ticket: FLAG_LOADING only, no FLAG_SIMULATION).
++        // Using updateChunkForced/FORCED (flags=15) gives FLAG_SIMULATION which adds entities to
++        // entityTickList — tickChildren would then tick them, doubling movement on top of our
++        // explicit tickNonPassenger loop. PLAYER_LOADING (flags=2) loads the chunk without simulation.
+         net.minecraft.server.level.ServerLevel overworld = this.overworld();
+         net.minecraft.core.BlockPos spawnPos = this.worldData.overworldData().getRespawnData().pos();
+         net.minecraft.world.level.ChunkPos spawnChunk = net.minecraft.world.level.ChunkPos.containing(spawnPos);
+-        // updateChunkForced adds a FORCED ticket at level 31 (ENTITY_TICKING), not just FULL(33).
+-        overworld.getChunkSource().updateChunkForced(spawnChunk, true);
++        overworld.getChunkSource().addTicketWithRadius(
++            net.minecraft.server.level.TicketType.PLAYER_LOADING, spawnChunk, 0);
+         // Synchronously wait for the chunk to reach FULL generation status.
+         try {
+             overworld.getChunkSource().getChunk(spawnChunk.x(), spawnChunk.z(),

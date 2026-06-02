@@ -18,4 +18,12 @@ public interface Commit {
 
     /** Stage entity destruction. Applied last; kill trumps concurrent writes. */
     void kill(long entity);
+
+    /**
+     * Send a message to another region, delivered at the start of that region's next tick.
+     * This is the only cross-region write path; direct component writes across region
+     * boundaries are not permitted (§1.6, §3.2). Same one-tick latency as intra-region
+     * commit visibility — the contract that makes region split/merge outcome-neutral.
+     */
+    void message(long targetRegion, Object payload);
 }

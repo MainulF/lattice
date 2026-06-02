@@ -39,8 +39,10 @@ public final class ComponentStore {
         setRaw(entity, component);
     }
 
+    @SuppressWarnings("unchecked")
     public <C extends Component> C get(long entity, Class<C> type) {
-        return column(type).get(entity);
+        ComponentColumn<?> col = columns.get(type);
+        return col == null ? null : (C) col.get(entity);
     }
 
     public boolean has(long entity, Class<? extends Component> type) {
