@@ -40,7 +40,7 @@ public final class EcsBenchmark {
     }
 
     public static void main(String[] args) {
-        System.out.printf("Lattice Phase 3 PoC — entity-range parallelism%n");
+        System.out.printf("Lattice Phase 3+4 PoC — entity-range parallelism + inter-region composing%n");
         System.out.printf("Entities: %,d | Warmup: %d | Measure: %d ticks | Trials: %d%n%n",
             ENTITIES, WARMUP_TICKS, MEASURE_TICKS, TRIALS);
 
@@ -52,11 +52,15 @@ public final class EcsBenchmark {
         runScenario("Physics+Wander (movement + StrictMath sin/cos + forEntity RNG/entity)",
             EcsBenchmark::registerHeavy);
 
+        System.out.println();
+
+        runMultiRegionScenario();
+
         System.out.printf("%n%nAmdahl note: the serial floor is the deterministic commit-apply (§1.2)%n" +
-            "  — sort + apply %,d write-ops/tick, inherently serial by design.%n" +
+            "  — sort + apply write-ops/tick, inherently serial by design.%n" +
             "  Heavier per-entity work raises the parallel fraction; the curve steepens.%n%n" +
             "Flat hash line = provably identical world state at every core count.%n" +
-            "  Folia/MCMT/Bevy cannot provide this guarantee. Lattice can.%n", ENTITIES * 2);
+            "  Folia/MCMT/Bevy cannot provide this guarantee. Lattice can.%n");
     }
 
     // ── Scenario runner ───────────────────────────────────────────────────────
@@ -205,5 +209,140 @@ public final class EcsBenchmark {
                 new Velocity(0.0, 0.0, 0.0));
         }
         return store;
+    }
+
+    // ── Phase 4 — Multi-region A+B composed ──────────────────────────────────
+
+    /**
+     * Axis-A (coordinator parallelism) and axis-B (per-region entity-range splitting)
+     * composing. Same total entity count as Phase 3 ({@link #ENTITIES} split across 4
+     * regions), so speedup is directly comparable to single-region Phase 3 results.
+     *
+     * <p>Hash is computed ONCE after the tick loop (not per tick) to avoid polluting
+     * timing with reflection overhead — mirrors the Phase 3 {@link #runScenario} pattern.
+     *
+     * <p>Thread budget: coordinator pool threads block on Future.get() while the per-region
+     * scheduler pool threads do actual compute. For config (A, B), active compute workers
+     * = A×B; coordinator threads sleep. No CPU oversubscription up to A×B ≤ core count.
+     */
+    private static void runMultiRegionScenario() {
+        final int REGIONS    = 4;
+        final int EPR        = ENTITIES / REGIONS;  // 2500 entities per region
+        final int WARMUP_MR  = 100;
+        final int MEASURE_MR = 200;
+
+        System.out.printf("=== Multi-region A+B composing (%d regions × %,d entities, MovementSystem) ===%n%n",
+            REGIONS, EPR);
+
+        // (1) Determinism check: hash at tick 50 must be identical across all (A,B) configs.
+        System.out.print("  Verifying A+B composed determinism contract... ");
+        int[][] checkCfgs = {{1,1},{4,1},{1,8},{4,2},{2,4}};
+        long[] checkHashes = new long[checkCfgs.length];
+        for (int ci = 0; ci < checkCfgs.length; ci++) {
+            ComponentStore[] stores = buildMultiRegionStores(REGIONS, EPR);
+            try (RegionCoordinator coord = setupMultiRegionCoord(stores, REGIONS, checkCfgs[ci][0], checkCfgs[ci][1])) {
+                for (int t = 0; t < 50; t++) coord.tick();
+            }
+            checkHashes[ci] = xorHash(stores);
+        }
+        boolean flat = true;
+        for (int ci = 1; ci < checkCfgs.length; ci++) {
+            if (checkHashes[ci] != checkHashes[0]) { flat = false; break; }
+        }
+        System.out.println(flat ? "PASS — hash identical at all (A,B) configs"
+                                : "FAIL — determinism violation");
+        System.out.println();
+
+        // (2) Speedup table. Store build + tear-down outside the timing window.
+        System.out.printf("  %-8s  %-8s  %-6s  %-13s  %-8s  %s%n",
+            "Coord A", "Sched B", "A×B", "MSPT (median)", "Speedup", "Hash");
+        System.out.println("  " + "-".repeat(68));
+
+        double baseline = Double.NaN;
+        long   refHash  = 0L;
+
+        int[][] benchCfgs = {{1,1},{4,1},{1,8},{4,2},{2,4}};
+
+        for (int[] cfg : benchCfgs) {
+            int A = cfg[0], B = cfg[1];
+            double[] mspts = new double[TRIALS];
+
+            for (int trial = 0; trial < TRIALS; trial++) {
+                // Warmup: fresh stores, JIT heats up, result discarded.
+                ComponentStore[] ws = buildMultiRegionStores(REGIONS, EPR);
+                try (RegionCoordinator wc = setupMultiRegionCoord(ws, REGIONS, A, B)) {
+                    for (int t = 0; t < WARMUP_MR; t++) wc.tick();
+                }
+                // Measure: fresh stores, only coord.tick() is timed.
+                ComponentStore[] ms = buildMultiRegionStores(REGIONS, EPR);
+                try (RegionCoordinator mc = setupMultiRegionCoord(ms, REGIONS, A, B)) {
+                    long t0 = System.nanoTime();
+                    for (int t = 0; t < MEASURE_MR; t++) mc.tick();
+                    mspts[trial] = (System.nanoTime() - t0) / 1_000_000.0 / MEASURE_MR;
+                }
+            }
+
+            // Final hash run (fresh store, single pass).
+            ComponentStore[] hs = buildMultiRegionStores(REGIONS, EPR);
+            try (RegionCoordinator hc = setupMultiRegionCoord(hs, REGIONS, A, B)) {
+                for (int t = 0; t < MEASURE_MR; t++) hc.tick();
+            }
+            long finalHash = xorHash(hs);
+
+            Arrays.sort(mspts);
+            double median = mspts[TRIALS / 2];
+            if (A == 1 && B == 1) { baseline = median; refHash = finalHash; }
+
+            double speedup  = baseline / median;
+            String hashMark = flat && (finalHash == refHash) ? "✓" : "✗ DIVERGED";
+
+            System.out.printf("  %-8d  %-8d  %-6s  %-13.4f  %-8.2fx  %016x %s%n",
+                A, B, A + "×" + B + "=" + (A * B), median, speedup, finalHash, hashMark);
+        }
+        System.out.println();
+        System.out.println("  Coord A = regions ticking in parallel (axis A, Folia model).");
+        System.out.println("  Sched B = entity-range fan-out within each region (axis B, Bevy model).");
+        System.out.println("  A×B = effective compute concurrency. Serial floor = per-region applyCommits.");
+    }
+
+    /** Build {@code regions} fresh stores, each with {@code epr} entities (sequential IDs). */
+    private static ComponentStore[] buildMultiRegionStores(int regions, int epr) {
+        ComponentStore[] stores = new ComponentStore[regions];
+        for (int ri = 0; ri < regions; ri++) {
+            ComponentStore store = new ComponentStore();
+            stores[ri] = store;
+            long base = (long) ri * epr + 1;
+            for (long id = base; id < base + epr; id++) {
+                store.spawn(id,
+                    new Position(id * 0.5, 200.0, id * 0.3),
+                    new Velocity(0.0, 0.0, 0.0));
+            }
+        }
+        return stores;
+    }
+
+    /**
+     * Wire {@code stores} into a {@link RegionCoordinator} with coordinator parallelism
+     * {@code A} and per-region scheduler parallelism {@code B}. Each region gets
+     * {@link MovementSystem} registered. Caller must close the returned coordinator.
+     */
+    private static RegionCoordinator setupMultiRegionCoord(
+            ComponentStore[] stores, int regions, int A, int B) {
+        RegionCoordinator coord = new RegionCoordinator();
+        coord.setParallelism(A);
+        for (int ri = 0; ri < regions; ri++) {
+            PhaseScheduler sched = new PhaseScheduler(stores[ri]);
+            sched.setParallelism(B);
+            coord.addRegion(new Region(ri, stores[ri], sched));
+            registerLight(sched);
+        }
+        return coord;
+    }
+
+    /** XOR of all region hashes (Position, Velocity). Computed once after ticks. */
+    private static long xorHash(ComponentStore[] stores) {
+        long h = 0L;
+        for (ComponentStore s : stores) h ^= WorldStateHasher.hash(s, Position.class, Velocity.class);
+        return h;
     }
 }

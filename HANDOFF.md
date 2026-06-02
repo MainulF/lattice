@@ -1,14 +1,14 @@
-# HANDOFF — Phase 4 started: Region + RegionCoordinator + §1.6 foundation green
+# HANDOFF — Phase 4 PoC exit: A+B composing benchmark green
 
-**Written:** 2026-06-01 (session 8 update)
-**Session:** Phase 4 (inter-region parallelism): Region ownership, RegionCoordinator, View.inbox() receive-side API, §1.6 test green at 1+4 coordinator cores
+**Written:** 2026-06-02 (session 9 update)
+**Session:** Phase 4 (4e — A+B composing PoC): multi-region benchmark + determinism test, 48 tests green
 **Next instance:** read `CLAUDE.md` and this file for state.
 
 ---
 
 ## 1. Where we are
 
-**Phase 0 complete. Phase 1 complete. Phase 2 complete. Phase 3 complete. Phase 4 started (4a partial, 4c foundation, §1.6 green).**
+**Phase 0 complete. Phase 1 complete. Phase 2 complete. Phase 3 complete. Phase 4: 4a+4c+4e done; 4b (dynamic split/merge) remains.**
 
 Phase 3 PoC done this session:
 - **Entity-range splitting** — `PhaseScheduler` now fans out each declared system's entity set into N contiguous chunks (one per core), each running as a separate pool task via a `ChunkedView`. This is data parallelism (MCMT axis), not task parallelism.
@@ -68,13 +68,48 @@ Deferred from Phase 3: entity-column cleanse (§2.3) and lighting cleanse (§2.4
 |---|---|
 | `DeterminismHarnessTest` | 23 |
 | `EcsTest` | 11 |
-| `RegionCoordinatorTest` | 9 |
+| `RegionCoordinatorTest` | 10 |
 | `LatticeServerTest` | 4 |
-| **Total** | **47** |
+| **Total** | **48** |
 
 ---
 
-## 2. What was built session 8 (Phase 4 — Region + RegionCoordinator)
+## 2. What was built session 9 (Phase 4 — 4e A+B composing PoC)
+
+### New test (`src/test/java/.../ecs/RegionCoordinatorTest.java`)
+
+| Test | Description |
+|---|---|
+| `composedAxesAB_independentRegions_hashFlatAcrossAllConfigurations` | Phase 4 exit criterion: A+B composing does not break flat-hash invariant. 4 regions × 25 entities, gravity (Phase.AI) + movement (Phase.MOVEMENT). Per-tick XOR hash identical across (A=1,B=1), (A=4,B=1), (A=1,B=4), (A=2,B=2). |
+
+### Modified benchmark (`src/main/java/.../ecs/EcsBenchmark.java`)
+
+Added `runMultiRegionScenario()` + helpers (`buildMultiRegionStores`, `setupMultiRegionCoord`, `xorHash`):
+- 4 regions × 2500 entities each = 10k total (same physical scale as Phase 3).
+- Determinism check: final-tick XOR hash identical across 5 `(A,B)` configs (not per-tick — avoids polluting timing with reflection overhead).
+- Speedup table: 5 `(A,B)` configs, store build outside timing window (same pattern as Phase 3 `runScenario`).
+
+### Phase 4e benchmark results (5700G / 8-core, 4 regions × 2500 entities, MovementSystem)
+
+| Coord A | Sched B | A×B | MSPT | Speedup | Hash |
+|---|---|---|---|---|---|
+| 1 | 1 | 1 | 2.31ms | 1.00× | 3d98ce7ad6ab2880 ✓ |
+| 4 | 1 | 4 | 0.65ms | 3.55× | identical ✓ |
+| 1 | 8 | 8 | 1.77ms | 1.31× | identical ✓ |
+| 4 | 2 | 8 | 0.60ms | **3.85×** | identical ✓ |
+| 2 | 4 | 8 | 0.97ms | 2.39× | identical ✓ |
+
+**Key findings:**
+- **A-axis dominates for multi-region workloads.** A-only (4,1) gets 3.55× vs B-only (1,8) at 1.31×. Reason: with 4 independent regions, the serial commit fraction is `per_region_commit / per_region_tick` — much smaller than single-region because each region commits only 2500 entities (not 10k). Distributing entities across regions reduces the Amdahl serial floor without any B-axis at all.
+- **A+B (4,2) is the peak at 3.85×** — B-axis provides a small additional gain within each region's compute phase. The `(A=4,B=2)` config outperforms `(A=4,B=1)` because each region's 2500 entities split into 2 parallel chunks.
+- **A+B (2,4) = 2.39× is weaker** — with only 2 regions in parallel, the coordinator's serial overhead between region-pairs limits the benefit of B=4 within each pair.
+- **The flat hash line holds across all A+B configs** — the thesis is demonstrated for the composed case.
+
+**Compare to Phase 3 single-region B-only at 8 cores: 1.38×** — Phase 4 multi-region A=4 already achieves 3.55×, i.e. ~2.6× more than the best single-region result. The multi-region decomposition fundamentally shifts the Amdahl ceiling by fragmenting the serial commit.
+
+---
+
+## 2b. What was built session 8 (Phase 4 — Region + RegionCoordinator)
 
 ### New source files (`src/main/java/io/github/mainulf/lattice/ecs/`)
 
@@ -215,11 +250,13 @@ Regions split and merge based on entity density / player proximity. Invariant: a
 
 §2.3: archetype columns are single-writer by construction (region owns its store). Formal cleanse is just documentation + enforcement. §2.4: stateless Starlight-style lighting — a `LIGHTING`-phase declared system, no global engine state.
 
-### 4e. PoC exit: both axes composing — NOT DONE
+### 4e. PoC exit: both axes composing — DONE
 
-**Known gap:** A+B composing (coordinator parallelism AND scheduler parallelism simultaneously) is not yet tested. §1.6 holds for axis-A-alone (coordinator parallelism, serial schedulers). The combined case (each region's scheduler also fans out entity chunks) is deferred to 4e.
+`RegionCoordinatorTest.composedAxesAB_independentRegions_hashFlatAcrossAllConfigurations` asserts the flat-hash invariant across (A=1,B=1), (A=4,B=1), (A=1,B=4), (A=2,B=2). `EcsBenchmark.runMultiRegionScenario()` shows the speedup curve: peak **3.85×** at (A=4, B=2). See session 9 results in §2 above.
 
-Run the §5 dense-scene benchmark with both A (multiple regions) and B (entity-range splitting within each region). Two curves: MSPT vs. core count (should steepen vs. Phase 3 single-region result), world-state hash vs. core count (flat line — §1.6 invariant holds through split/merge).
+The Phase 4 PoC exit criterion ("both axes A and B live and composing") is met. The two headline curves are available:
+1. MSPT vs (A,B) config — peak 3.85× at (A=4,B=2), exceeding the Phase 3 B-only ceiling (1.38×).
+2. Hash vs config — flat line (`3d98ce7ad6ab2880`) at all configs.
 
 ---
 

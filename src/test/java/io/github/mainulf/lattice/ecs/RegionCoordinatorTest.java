@@ -455,4 +455,97 @@ class RegionCoordinatorTest {
             assertTrue(threw[0], "inbox list must be unmodifiable");
         }
     }
+
+    // ── 7. Composed A+B determinism (Phase 4 exit criterion) ─────────────────────
+
+    /**
+     * Phase 4 exit criterion (§5): axis A (coordinator parallelism) and axis B
+     * (per-region entity-range splitting) active simultaneously. Verifies the flat-hash
+     * invariant holds through A+B composing — the per-tick world-state hash is
+     * bit-identical regardless of how parallelism is split between the two axes.
+     *
+     * <p>4 independent regions (25 entities each), gravity (Phase.AI) + movement
+     * (Phase.MOVEMENT). Per-tick XOR of all region hashes must match for:
+     * <ul>
+     *   <li>(A=1, B=1) — fully serial baseline</li>
+     *   <li>(A=4, B=1) — axis A only (4 regions in parallel, serial schedulers)</li>
+     *   <li>(A=1, B=4) — axis B only (serial coordinator, 4-chunk entity fans)</li>
+     *   <li>(A=2, B=2) — both axes composing</li>
+     * </ul>
+     */
+    @Test
+    void composedAxesAB_independentRegions_hashFlatAcrossAllConfigurations() {
+        int ticks   = 50;
+        long[] serial   = runComposedAxes(ticks, 1, 1);
+        long[] axisA    = runComposedAxes(ticks, 4, 1);
+        long[] axisB    = runComposedAxes(ticks, 1, 4);
+        long[] composed = runComposedAxes(ticks, 2, 2);
+
+        for (int t = 0; t < ticks; t++) {
+            long s = serial[t], a = axisA[t], b = axisB[t], c = composed[t];
+            if (s != a || s != b || s != c) {
+                throw new AssertionError(String.format(
+                    "A+B composition hash mismatch at tick %d: " +
+                    "serial=%016x  A-only=%016x  B-only=%016x  composed=%016x",
+                    t + 1, s, a, b, c));
+            }
+        }
+    }
+
+    /**
+     * Run 4 independent regions (25 entities each) at the given coordinator and scheduler
+     * parallelism. Gravity in Phase.AI + movement in Phase.MOVEMENT. Returns per-tick
+     * XOR of all region hashes (Position, Velocity) — the same quantity used by
+     * {@link #parallelAxisA_independentRegions_identicalHashAtAllCoreCounts}.
+     */
+    private long[] runComposedAxes(int ticks, int coordCores, int schedulerCores) {
+        int numRegions    = 4;
+        int entsPerRegion = 25;
+        long[] log = new long[ticks];
+        ComponentStore[] stores = new ComponentStore[numRegions];
+
+        try (RegionCoordinator coord = new RegionCoordinator()) {
+            coord.setParallelism(coordCores);
+
+            for (int ri = 0; ri < numRegions; ri++) {
+                ComponentStore store = new ComponentStore();
+                stores[ri] = store;
+                long base = (long) ri * 100 + 1;
+                for (long id = base; id < base + entsPerRegion; id++) {
+                    store.spawn(id, new Position(id, 100.0, 0), new Velocity(0, 0, 0));
+                }
+                PhaseScheduler sched = new PhaseScheduler(store);
+                sched.setParallelism(schedulerCores);
+                Region r = new Region(ri, store, sched);
+                coord.addRegion(r);
+
+                r.scheduler().register("gravity", (view, commit) -> {
+                    for (long id : view.query(Velocity.class)) {
+                        Velocity v = view.get(id, Velocity.class);
+                        commit.set(id, new Velocity(v.dx(), v.dy() - 0.04, v.dz()));
+                    }
+                }, Access.builder().reads(Velocity.class).writes(Velocity.class).build(),
+                   Phase.AI, 0);
+
+                r.scheduler().register("move", (view, commit) -> {
+                    for (long id : view.query(Position.class, Velocity.class)) {
+                        Position p = view.get(id, Position.class);
+                        Velocity v = view.get(id, Velocity.class);
+                        commit.set(id, new Position(p.x() + v.dx(), p.y() + v.dy(), p.z() + v.dz()));
+                    }
+                }, Access.builder().reads(Position.class, Velocity.class).writes(Position.class).build(),
+                   Phase.MOVEMENT, 0);
+            }
+
+            for (int t = 0; t < ticks; t++) {
+                coord.tick();
+                long xor = 0L;
+                for (ComponentStore s : stores) {
+                    xor ^= WorldStateHasher.hash(s, Position.class, Velocity.class);
+                }
+                log[t] = xor;
+            }
+        }
+        return log;
+    }
 }
